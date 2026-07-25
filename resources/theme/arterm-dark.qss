@@ -1,0 +1,587 @@
+/*
+ * ArTerm design system.
+ *
+ * Every colour below is a token substituted by ui::Theme, so this file works
+ * unchanged for both the dark and the light theme. Do not hard-code colours
+ * here; add a token to ui/Theme.hpp instead.
+ */
+
+/* ------------------------------------------------------------------ base */
+
+QWidget {
+    background-color: @canvas;
+    color: @textPrimary;
+    outline: none;
+}
+
+QMainWindow,
+QDialog {
+    background-color: @canvas;
+}
+
+QToolTip {
+    background-color: @elevated;
+    color: @textPrimary;
+    border: 1px solid @borderStrong;
+    border-radius: @radiusSmall;
+    padding: 6px 8px;
+}
+
+/* -------------------------------------------------------------- sidebar */
+
+#sidebar {
+    background-color: @sidebar;
+    border-right: 1px solid @borderSubtle;
+}
+
+#sidebarHeader {
+    background-color: @sidebar;
+    padding: 0px;
+}
+
+#sidebarTitle {
+    color: @textPrimary;
+    font-size: 15px;
+    font-weight: 600;
+    background: transparent;
+}
+
+#hostList {
+    background-color: @sidebar;
+    border: none;
+    padding: 4px 6px;
+}
+
+#hostList::item {
+    background: transparent;
+    border-radius: @radiusMedium;
+    padding: 7px 10px;
+    margin: 1px 0px;
+    color: @textSecondary;
+}
+
+#hostList::item:hover {
+    background-color: @elevated;
+    color: @textPrimary;
+}
+
+#hostList::item:selected {
+    background-color: @accentSubtle;
+    color: @textPrimary;
+}
+
+#hostGroupLabel {
+    color: @textMuted;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+    background: transparent;
+    padding: 12px 12px 4px 12px;
+}
+
+/* -------------------------------------------------------------- toolbar */
+
+#appToolBar {
+    background-color: @canvas;
+    border: none;
+    border-bottom: 1px solid @borderSubtle;
+    spacing: 6px;
+    padding: 6px 10px;
+}
+
+#appToolBar QToolButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: @radiusSmall;
+    padding: 5px 9px;
+    color: @textSecondary;
+}
+
+#appToolBar QToolButton:hover {
+    background-color: @elevated;
+    color: @textPrimary;
+}
+
+#appToolBar QToolButton:pressed,
+#appToolBar QToolButton:checked {
+    background-color: @accentSubtle;
+    color: @textPrimary;
+}
+
+/* ----------------------------------------------------------------- tabs */
+
+QTabWidget::pane {
+    border: none;
+    background-color: @canvas;
+}
+
+#sessionTabs QTabBar {
+    background-color: @canvas;
+    qproperty-drawBase: 0;
+}
+
+#sessionTabs QTabBar::tab {
+    background-color: transparent;
+    color: @textMuted;
+    border: none;
+    border-radius: @radiusSmall;
+    padding: 7px 14px;
+    margin: 4px 2px;
+    min-width: 96px;
+}
+
+#sessionTabs QTabBar::tab:hover {
+    background-color: @elevated;
+    color: @textSecondary;
+}
+
+#sessionTabs QTabBar::tab:selected {
+    background-color: @surface;
+    color: @textPrimary;
+}
+
+#sessionTabs QTabBar::close-button {
+    subcontrol-position: right;
+    margin-left: 6px;
+}
+
+/* ------------------------------------------------------------ file panes */
+
+#filePane {
+    background-color: @surface;
+}
+
+#filePaneTitleStrip {
+    background-color: @surface;
+    border-bottom: 1px solid @borderSubtle;
+}
+
+#filePaneTitle {
+    color: @textPrimary;
+    font-size: 12px;
+    font-weight: 600;
+    background: transparent;
+}
+
+#filePaneHeader {
+    background-color: @surface;
+    border-bottom: 1px solid @borderSubtle;
+}
+
+#filePaneHeader QToolButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: @radiusSmall;
+    padding: 4px;
+}
+
+#filePaneHeader QToolButton:hover {
+    background-color: @elevated;
+}
+
+#filePaneHeader QToolButton:checked {
+    background-color: @accentSubtle;
+}
+
+#filePaneHeader QToolButton:disabled {
+    opacity: 0.4;
+}
+
+#filePaneStatus {
+    background-color: @surface;
+    color: @textMuted;
+    font-size: 11px;
+    border-top: 1px solid @borderSubtle;
+}
+
+#filePaneStatus[state="error"] {
+    color: @danger;
+}
+
+#filePanePlaceholder {
+    background-color: @surface;
+    color: @textMuted;
+    font-size: 13px;
+}
+
+#fileTable {
+    background-color: @surface;
+    alternate-background-color: @surface;
+    border: none;
+    selection-background-color: @accentSubtle;
+    selection-color: @textPrimary;
+    gridline-color: transparent;
+}
+
+#fileTable::item {
+    padding: 3px 8px;
+    border: none;
+    color: @textSecondary;
+}
+
+#fileTable::item:selected {
+    background-color: @accentSubtle;
+    color: @textPrimary;
+}
+
+#fileTable::item:hover {
+    background-color: @elevated;
+}
+
+QHeaderView::section {
+    background-color: @surface;
+    color: @textMuted;
+    border: none;
+    border-bottom: 1px solid @borderSubtle;
+    padding: 6px 8px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+QHeaderView::section:hover {
+    color: @textSecondary;
+}
+
+/* -------------------------------------------------------- transfer panel */
+
+#transferPanel {
+    background-color: @surface;
+    border-top: 1px solid @borderSubtle;
+}
+
+#transferPanelHeader {
+    background-color: @surface;
+    color: @textSecondary;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 6px 12px;
+}
+
+#transferTable {
+    background-color: @surface;
+    border: none;
+    selection-background-color: @accentSubtle;
+}
+
+/* --------------------------------------------------------------- inputs */
+
+QLineEdit,
+QPlainTextEdit,
+QTextEdit,
+QSpinBox,
+QComboBox {
+    background-color: @elevated;
+    color: @textPrimary;
+    border: 1px solid @borderSubtle;
+    border-radius: @radiusSmall;
+    padding: 5px 9px;
+    selection-background-color: @accent;
+    selection-color: @textOnAccent;
+}
+
+QLineEdit:focus,
+QPlainTextEdit:focus,
+QTextEdit:focus,
+QSpinBox:focus,
+QComboBox:focus {
+    border-color: @accent;
+}
+
+QLineEdit:disabled,
+QComboBox:disabled {
+    color: @textMuted;
+    background-color: @surface;
+}
+
+#pathEdit {
+    font-family: monospace;
+    font-size: 11px;
+}
+
+#filterEdit {
+    padding: 3px 8px;
+    font-size: 11px;
+}
+
+#searchField {
+    background-color: @elevated;
+    border-radius: @radiusMedium;
+    padding: 6px 10px;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 22px;
+}
+
+QComboBox QAbstractItemView {
+    background-color: @elevated;
+    border: 1px solid @borderStrong;
+    border-radius: @radiusSmall;
+    selection-background-color: @accentSubtle;
+    padding: 4px;
+}
+
+/* -------------------------------------------------------------- buttons */
+
+QPushButton {
+    background-color: @elevated;
+    color: @textPrimary;
+    border: 1px solid @borderStrong;
+    border-radius: @radiusSmall;
+    padding: 7px 16px;
+    font-weight: 500;
+}
+
+QPushButton:hover {
+    background-color: @borderSubtle;
+}
+
+QPushButton:pressed {
+    background-color: @surface;
+}
+
+QPushButton:disabled {
+    color: @textMuted;
+    border-color: @borderSubtle;
+}
+
+QPushButton[accent="true"] {
+    background-color: @accent;
+    color: @textOnAccent;
+    border: 1px solid @accent;
+}
+
+QPushButton[accent="true"]:hover {
+    background-color: @accentHover;
+    border-color: @accentHover;
+}
+
+QPushButton[danger="true"] {
+    background-color: transparent;
+    color: @danger;
+    border-color: @danger;
+}
+
+QPushButton[danger="true"]:hover {
+    background-color: @danger;
+    color: @textOnAccent;
+}
+
+QToolButton {
+    background: transparent;
+    border: none;
+    border-radius: @radiusSmall;
+    padding: 4px;
+}
+
+QToolButton:hover {
+    background-color: @elevated;
+}
+
+/* ---------------------------------------------------------------- menus */
+
+QMenu {
+    background-color: @elevated;
+    border: 1px solid @borderStrong;
+    border-radius: @radiusMedium;
+    padding: 5px;
+}
+
+QMenu::item {
+    background: transparent;
+    border-radius: @radiusSmall;
+    padding: 6px 22px 6px 12px;
+    color: @textSecondary;
+}
+
+QMenu::item:selected {
+    background-color: @accentSubtle;
+    color: @textPrimary;
+}
+
+QMenu::item:disabled {
+    color: @textMuted;
+}
+
+QMenu::separator {
+    height: 1px;
+    background-color: @borderSubtle;
+    margin: 5px 8px;
+}
+
+QMenuBar {
+    background-color: @canvas;
+    border-bottom: 1px solid @borderSubtle;
+}
+
+QMenuBar::item {
+    background: transparent;
+    padding: 6px 10px;
+    color: @textSecondary;
+}
+
+QMenuBar::item:selected {
+    background-color: @elevated;
+    color: @textPrimary;
+    border-radius: @radiusSmall;
+}
+
+/* ----------------------------------------------------------- scrollbars */
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 11px;
+    margin: 0px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: @borderStrong;
+    border-radius: 5px;
+    min-height: 32px;
+    margin: 2px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: @textMuted;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 11px;
+    margin: 0px;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: @borderStrong;
+    border-radius: 5px;
+    min-width: 32px;
+    margin: 2px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background-color: @textMuted;
+}
+
+QScrollBar::add-line,
+QScrollBar::sub-line,
+QScrollBar::add-page,
+QScrollBar::sub-page {
+    background: none;
+    border: none;
+    height: 0px;
+    width: 0px;
+}
+
+/* -------------------------------------------------------------- various */
+
+QSplitter::handle {
+    background-color: @borderSubtle;
+}
+
+QSplitter::handle:horizontal {
+    width: 1px;
+}
+
+QSplitter::handle:vertical {
+    height: 1px;
+}
+
+QSplitter::handle:hover {
+    background-color: @accent;
+}
+
+QStatusBar {
+    background-color: @canvas;
+    border-top: 1px solid @borderSubtle;
+    color: @textMuted;
+}
+
+QStatusBar::item {
+    border: none;
+}
+
+QProgressBar {
+    background-color: @elevated;
+    border: none;
+    border-radius: 3px;
+    height: 6px;
+    text-align: center;
+    color: @textSecondary;
+}
+
+QProgressBar::chunk {
+    background-color: @accent;
+    border-radius: 3px;
+}
+
+QCheckBox,
+QRadioButton {
+    spacing: 8px;
+    color: @textSecondary;
+    background: transparent;
+}
+
+QCheckBox::indicator,
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid @borderStrong;
+    background-color: @elevated;
+}
+
+QCheckBox::indicator {
+    border-radius: 4px;
+}
+
+QRadioButton::indicator {
+    border-radius: 8px;
+}
+
+QCheckBox::indicator:checked,
+QRadioButton::indicator:checked {
+    background-color: @accent;
+    border-color: @accent;
+}
+
+QGroupBox {
+    border: 1px solid @borderSubtle;
+    border-radius: @radiusMedium;
+    margin-top: 14px;
+    padding: 12px;
+    font-weight: 600;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0px 5px;
+    color: @textSecondary;
+}
+
+QLabel[role="caption"] {
+    color: @textMuted;
+    font-size: 11px;
+}
+
+QLabel[role="heading"] {
+    color: @textPrimary;
+    font-size: 17px;
+    font-weight: 600;
+}
+
+#connectionBanner {
+    background-color: @elevated;
+    border-bottom: 1px solid @borderSubtle;
+    padding: 8px 14px;
+}
+
+#connectionBanner[state="error"] {
+    background-color: @danger;
+    color: @textOnAccent;
+}
+
+#connectionBanner[state="connecting"] {
+    color: @textSecondary;
+}
