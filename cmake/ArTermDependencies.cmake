@@ -1,16 +1,10 @@
 # Third-party dependency resolution.
 #
-# macOS:  brew install qt libssh2
-#         cmake -B build -DCMAKE_PREFIX_PATH="$(brew --prefix qt);$(brew --prefix libssh2)"
-# Linux:  apt install qt6-base-dev libssh2-1-dev   (used for CI smoke builds)
-
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Network Svg)
-
-qt_standard_project_setup()
-
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC OFF)
+# ArTerm is a macOS application built against the system frameworks; libssh2 is
+# the only third-party library it needs.
+#
+#   brew install libssh2
+#   cmake -B build -DCMAKE_PREFIX_PATH="$(brew --prefix libssh2)"
 
 # ---------------------------------------------------------------------------
 # libssh2 - prefer the CMake package config, fall back to pkg-config, and as a
@@ -43,9 +37,8 @@ else()
         if(NOT LIBSSH2_INCLUDE_DIR OR NOT LIBSSH2_LIBRARY)
             message(FATAL_ERROR
                 "libssh2 was not found.\n"
-                "  macOS: brew install libssh2 && "
-                "cmake -B build -DCMAKE_PREFIX_PATH=\"$(brew --prefix qt);$(brew --prefix libssh2)\"\n"
-                "  Linux: sudo apt install libssh2-1-dev")
+                "  brew install libssh2 && "
+                "cmake -B build -DCMAKE_PREFIX_PATH=\"$(brew --prefix libssh2)\"")
         endif()
 
         add_library(arterm_libssh2_imported UNKNOWN IMPORTED)

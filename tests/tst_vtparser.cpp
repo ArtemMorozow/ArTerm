@@ -1,205 +1,200 @@
-#include "terminal/VtParser.hpp"
+#include "terminal/vt_parser.hpp"
 
-#include <QTest>
+#include <catch2/catch_test_macros.hpp>
+
+#include <string>
+#include <vector>
 
 using namespace arterm::term;
 
-namespace {
+namespace
+{
 
-/// Records every event so a test can assert on the exact sequence produced.
-class RecordingHandler : public VtHandler {
-public:
-    QString printed;
-    QList<std::uint8_t> executed;
-    QList<CsiSequence> csi;
-    QList<EscSequence> esc;
-    QList<QByteArray> osc;
+	void append_utf8( std::string& out, char32_t code_point ){
+		if( code_point < 0x80 ){
+			out.push_back( static_cast<char>( code_point ) );
+		}
+		else if( code_point < 0x800 ){
+			out.push_back( static_cast<char>( 0xC0 | ( code_point >> 6 ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( code_point & 0x3F ) ) );
+		}
+		else if( code_point < 0x10000 ){
+			out.push_back( static_cast<char>( 0xE0 | ( code_point >> 12 ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( ( code_point >> 6 ) & 0x3F ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( code_point & 0x3F ) ) );
+		}
+		else{
+			out.push_back( static_cast<char>( 0xF0 | ( code_point >> 18 ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( ( code_point >> 12 ) & 0x3F ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( ( code_point >> 6 ) & 0x3F ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( code_point & 0x3F ) ) );
+		}
+	}
 
-    void print(char32_t codePoint) override { printed += QString::fromUcs4(&codePoint, 1); }
-    void execute(std::uint8_t control) override { executed.append(control); }
-    void csiDispatch(const CsiSequence &sequence) override { csi.append(sequence); }
-    void escDispatch(const EscSequence &sequence) override { esc.append(sequence); }
-    void oscDispatch(const QByteArray &payload) override { osc.append(payload); }
-};
+	/// Records every event so a test can assert on the exact sequence produced.
+	class RecordingHandler : public VtHandler
+	{
+	public:
+		std::string               printed;
+		std::vector<std::uint8_t> executed;
+		std::vector<CsiSequence>  csi;
+		std::vector<EscSequence>  esc;
+		std::vector<std::string>  osc;
+
+		void print( char32_t code_point ) override { append_utf8( printed, code_point ); }
+		void execute( std::uint8_t control ) override { executed.push_back( control ); }
+		void csi_dispatch( CsiSequence const& sequence ) override { csi.push_back( sequence ); }
+		void esc_dispatch( EscSequence const& sequence ) override { esc.push_back( sequence ); }
+		void osc_dispatch( std::string const& payload ) override { osc.push_back( payload ); }
+	};
+
+	constexpr std::string_view REPLACEMENT = "\xEF\xBF\xBD";
 
 } // namespace
 
-class TestVtParser : public QObject {
-    Q_OBJECT
+TEST_CASE( "plain text is printed", "[vtparser]" ){
+	RecordingHandler handler;
+	VtParser         parser( handler );
 
-private Q_SLOTS:
-    void plainTextIsPrinted();
-    void controlCharactersAreExecuted();
-    void csiParametersAreParsed();
-    void omittedParameterUsesTheFallback();
-    void privateMarkerIsCaptured();
-    void oscEndsOnBel();
-    void oscEndsOnStringTerminator();
-    void escapeAbortsAnIncompleteSequence();
-    void utf8IsDecoded();
-    void invalidUtf8BecomesReplacementCharacter();
-    void splitInputIsResumed();
-    void parameterOverflowIsClamped();
-};
+	parser.parse( std::string( "hello" ) );
 
-void TestVtParser::plainTextIsPrinted()
-{
-    RecordingHandler handler;
-    VtParser parser(handler);
-
-    parser.parse(QByteArrayLiteral("hello"));
-
-    QCOMPARE(handler.printed, QStringLiteral("hello"));
-    QVERIFY(handler.csi.isEmpty());
+	CHECK( handler.printed == "hello" );
+	CHECK( handler.csi.empty() );
 }
 
-void TestVtParser::controlCharactersAreExecuted()
-{
-    RecordingHandler handler;
-    VtParser parser(handler);
+TEST_CASE( "control characters are executed", "[vtparser]" ){
+	RecordingHandler handler;
+	VtParser         parser( handler );
 
-    parser.parse(QByteArrayLiteral("a\r\nb\t"));
+	parser.parse( std::string( "a\r\nb\t" ) );
 
-    QCOMPARE(handler.printed, QStringLiteral("ab"));
-    QCOMPARE(handler.executed, QList<std::uint8_t>({0x0D, 0x0A, 0x09}));
+	CHECK( handler.printed == "ab" );
+	CHECK( handler.executed == std::vector<std::uint8_t>{ 0x0D, 0x0A, 0x09 } );
 }
 
-void TestVtParser::csiParametersAreParsed()
-{
-    RecordingHandler handler;
-    VtParser parser(handler);
+TEST_CASE( "CSI parameters are parsed", "[vtparser]" ){
+	RecordingHandler handler;
+	VtParser         parser( handler );
 
-    parser.parse(QByteArrayLiteral("\033[12;34H"));
+	parser.parse( std::string( "\033[12;34H" ) );
 
-    QCOMPARE(handler.csi.size(), 1);
-    QCOMPARE(handler.csi.first().final, 'H');
-    QCOMPARE(handler.csi.first().parameterCount, 2);
-    QCOMPARE(handler.csi.first().parameter(0), 12);
-    QCOMPARE(handler.csi.first().parameter(1), 34);
+	REQUIRE( handler.csi.size() == 1 );
+	CHECK( handler.csi.front().final == 'H' );
+	CHECK( handler.csi.front().parameter_count == 2 );
+	CHECK( handler.csi.front().parameter( 0 ) == 12 );
+	CHECK( handler.csi.front().parameter( 1 ) == 34 );
 }
 
-void TestVtParser::omittedParameterUsesTheFallback()
-{
-    RecordingHandler handler;
-    VtParser parser(handler);
+TEST_CASE( "an omitted parameter uses the fallback", "[vtparser]" ){
+	RecordingHandler handler;
+	VtParser         parser( handler );
 
-    // "CSI ;5H" means row default, column 5.
-    parser.parse(QByteArrayLiteral("\033[;5H"));
+	// "CSI ;5H" means row default, column 5.
+	parser.parse( std::string( "\033[;5H" ) );
 
-    QCOMPARE(handler.csi.size(), 1);
-    const CsiSequence &sequence = handler.csi.first();
-    QCOMPARE(sequence.positiveParameter(0), 1);
-    QCOMPARE(sequence.positiveParameter(1), 5);
+	REQUIRE( handler.csi.size() == 1 );
+	CsiSequence const& sequence = handler.csi.front();
+	CHECK( sequence.positive_parameter( 0 ) == 1 );
+	CHECK( sequence.positive_parameter( 1 ) == 5 );
 }
 
-void TestVtParser::privateMarkerIsCaptured()
-{
-    RecordingHandler handler;
-    VtParser parser(handler);
+TEST_CASE( "the private marker is captured", "[vtparser]" ){
+	RecordingHandler handler;
+	VtParser         parser( handler );
 
-    parser.parse(QByteArrayLiteral("\033[?1049h"));
+	parser.parse( std::string( "\033[?1049h" ) );
 
-    QCOMPARE(handler.csi.size(), 1);
-    QCOMPARE(handler.csi.first().privateMarker, '?');
-    QCOMPARE(handler.csi.first().parameter(0), 1049);
-    QCOMPARE(handler.csi.first().final, 'h');
+	REQUIRE( handler.csi.size() == 1 );
+	CHECK( handler.csi.front().private_marker == '?' );
+	CHECK( handler.csi.front().parameter( 0 ) == 1049 );
+	CHECK( handler.csi.front().final == 'h' );
 }
 
-void TestVtParser::oscEndsOnBel()
-{
-    RecordingHandler handler;
-    VtParser parser(handler);
+TEST_CASE( "OSC ends on BEL", "[vtparser]" ){
+	RecordingHandler handler;
+	VtParser         parser( handler );
 
-    parser.parse(QByteArrayLiteral("\033]0;my title\007rest"));
+	parser.parse( std::string( "\033]0;my title\007rest" ) );
 
-    QCOMPARE(handler.osc.size(), 1);
-    QCOMPARE(handler.osc.first(), QByteArrayLiteral("0;my title"));
-    QCOMPARE(handler.printed, QStringLiteral("rest"));
+	REQUIRE( handler.osc.size() == 1 );
+	CHECK( handler.osc.front() == "0;my title" );
+	CHECK( handler.printed == "rest" );
 }
 
-void TestVtParser::oscEndsOnStringTerminator()
-{
-    RecordingHandler handler;
-    VtParser parser(handler);
+TEST_CASE( "OSC ends on the string terminator", "[vtparser]" ){
+	RecordingHandler handler;
+	VtParser         parser( handler );
 
-    // The "ESC \" form must not lose the payload collected so far.
-    parser.parse(QByteArrayLiteral("\033]2;title\033\\ok"));
+	// The "ESC \" form must not lose the payload collected so far.
+	parser.parse( std::string( "\033]2;title\033\\ok" ) );
 
-    QCOMPARE(handler.osc.size(), 1);
-    QCOMPARE(handler.osc.first(), QByteArrayLiteral("2;title"));
-    QCOMPARE(handler.printed, QStringLiteral("ok"));
+	REQUIRE( handler.osc.size() == 1 );
+	CHECK( handler.osc.front() == "2;title" );
+	CHECK( handler.printed == "ok" );
 }
 
-void TestVtParser::escapeAbortsAnIncompleteSequence()
-{
-    RecordingHandler handler;
-    VtParser parser(handler);
+TEST_CASE( "escape aborts an incomplete sequence", "[vtparser]" ){
+	RecordingHandler handler;
+	VtParser         parser( handler );
 
-    parser.parse(QByteArrayLiteral("\033[12\033[5A"));
+	parser.parse( std::string( "\033[12\033[5A" ) );
 
-    QCOMPARE(handler.csi.size(), 1);
-    QCOMPARE(handler.csi.first().final, 'A');
-    QCOMPARE(handler.csi.first().parameter(0), 5);
+	REQUIRE( handler.csi.size() == 1 );
+	CHECK( handler.csi.front().final == 'A' );
+	CHECK( handler.csi.front().parameter( 0 ) == 5 );
 }
 
-void TestVtParser::utf8IsDecoded()
-{
-    RecordingHandler handler;
-    VtParser parser(handler);
+TEST_CASE( "UTF-8 is decoded", "[vtparser]" ){
+	RecordingHandler handler;
+	VtParser         parser( handler );
 
-    parser.parse(QStringLiteral("héllo — 日本 🙂").toUtf8());
+	std::string const text = "héllo — 日本 🙂";
+	parser.parse( text );
 
-    QCOMPARE(handler.printed, QStringLiteral("héllo — 日本 🙂"));
+	CHECK( handler.printed == text );
 }
 
-void TestVtParser::invalidUtf8BecomesReplacementCharacter()
-{
-    RecordingHandler handler;
-    VtParser parser(handler);
+TEST_CASE( "invalid UTF-8 becomes the replacement character", "[vtparser]" ){
+	RecordingHandler handler;
+	VtParser         parser( handler );
 
-    // Two separate errors: a lone continuation byte, then a two-byte lead whose
-    // continuation never arrives. Each produces its own replacement character,
-    // and the byte that broke the sequence is still printed.
-    parser.parse(QByteArray("\x80\xC3", 2));
-    parser.parse(QByteArrayLiteral("A"));
+	// Two separate errors: a lone continuation byte, then a two-byte lead whose
+	// continuation never arrives. Each produces its own replacement character,
+	// and the byte that broke the sequence is still printed.
+	parser.parse( std::string( "\x80\xC3", 2 ) );
+	parser.parse( std::string( "A" ) );
 
-    QCOMPARE(handler.printed, QStringLiteral("��A"));
+	CHECK( handler.printed == std::string( REPLACEMENT ) + std::string( REPLACEMENT ) + "A" );
 
-    // An overlong encoding of '/' must not decode back to '/', which is the
-    // classic path-traversal trick.
-    RecordingHandler overlong;
-    VtParser overlongParser(overlong);
-    overlongParser.parse(QByteArray("\xC0\xAF", 2));
-    QCOMPARE(overlong.printed, QStringLiteral("�"));
+	// An overlong encoding of '/' must not decode back to '/', which is the
+	// classic path-traversal trick.
+	RecordingHandler overlong;
+	VtParser         overlong_parser( overlong );
+	overlong_parser.parse( std::string( "\xC0\xAF", 2 ) );
+	CHECK( overlong.printed == REPLACEMENT );
 }
 
-void TestVtParser::splitInputIsResumed()
-{
-    RecordingHandler handler;
-    VtParser parser(handler);
+TEST_CASE( "split input is resumed", "[vtparser]" ){
+	RecordingHandler handler;
+	VtParser         parser( handler );
 
-    // A sequence arriving in three separate reads must still parse as one.
-    parser.parse(QByteArrayLiteral("\033["));
-    parser.parse(QByteArrayLiteral("31"));
-    parser.parse(QByteArrayLiteral("m"));
+	// A sequence arriving in three separate reads must still parse as one.
+	parser.parse( std::string( "\033[" ) );
+	parser.parse( std::string( "31" ) );
+	parser.parse( std::string( "m" ) );
 
-    QCOMPARE(handler.csi.size(), 1);
-    QCOMPARE(handler.csi.first().final, 'm');
-    QCOMPARE(handler.csi.first().parameter(0), 31);
+	REQUIRE( handler.csi.size() == 1 );
+	CHECK( handler.csi.front().final == 'm' );
+	CHECK( handler.csi.front().parameter( 0 ) == 31 );
 }
 
-void TestVtParser::parameterOverflowIsClamped()
-{
-    RecordingHandler handler;
-    VtParser parser(handler);
+TEST_CASE( "parameter overflow is clamped", "[vtparser]" ){
+	RecordingHandler handler;
+	VtParser         parser( handler );
 
-    parser.parse(QByteArrayLiteral("\033[99999999999999999999A"));
+	parser.parse( std::string( "\033[99999999999999999999A" ) );
 
-    QCOMPARE(handler.csi.size(), 1);
-    // The exact ceiling does not matter; not overflowing does.
-    QVERIFY(handler.csi.first().parameter(0) > 0);
+	REQUIRE( handler.csi.size() == 1 );
+	// The exact ceiling does not matter; not overflowing does.
+	CHECK( handler.csi.front().parameter( 0 ) > 0 );
 }
-
-QTEST_APPLESS_MAIN(TestVtParser)
-
-#include "tst_vtparser.moc"

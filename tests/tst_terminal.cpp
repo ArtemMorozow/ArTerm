@@ -1,207 +1,215 @@
-#include "terminal/Terminal.hpp"
+#include "terminal/terminal.hpp"
 
-#include <QSignalSpy>
-#include <QTest>
+#include <catch2/catch_test_macros.hpp>
+
+#include <string>
+#include <vector>
 
 using namespace arterm::term;
 
-namespace {
-
-QString rowText(const Terminal &terminal, int row)
+namespace
 {
-    QString text;
-    for (const Cell &cell : terminal.screen().line(row)) {
-        if (hasFlag(cell.attributes.flags, CellFlag::WideTrail))
-            continue;
-        text += QString::fromUcs4(&cell.character, 1);
-    }
-    while (text.endsWith(QLatin1Char(' ')))
-        text.chop(1);
-    return text;
-}
+
+	void append_utf8( std::string& out, char32_t code_point ){
+		if( code_point < 0x80 ){
+			out.push_back( static_cast<char>( code_point ) );
+		}
+		else if( code_point < 0x800 ){
+			out.push_back( static_cast<char>( 0xC0 | ( code_point >> 6 ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( code_point & 0x3F ) ) );
+		}
+		else if( code_point < 0x10000 ){
+			out.push_back( static_cast<char>( 0xE0 | ( code_point >> 12 ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( ( code_point >> 6 ) & 0x3F ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( code_point & 0x3F ) ) );
+		}
+		else{
+			out.push_back( static_cast<char>( 0xF0 | ( code_point >> 18 ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( ( code_point >> 12 ) & 0x3F ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( ( code_point >> 6 ) & 0x3F ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( code_point & 0x3F ) ) );
+		}
+	}
+
+	std::string row_text( Terminal const& terminal, int row ){
+		std::string text;
+		for( Cell const& cell : terminal.screen().line( row ) ){
+			if( has_flag( cell.attributes.flags, CellFlag::WIDE_TRAIL ) )
+				continue;
+			append_utf8( text, cell.character );
+		}
+		while( !text.empty() && text.back() == ' ' )
+			text.pop_back();
+		return text;
+	}
 
 } // namespace
 
-class TestTerminal : public QObject {
-    Q_OBJECT
+TEST_CASE( "prints plain output", "[terminal]" ){
+	Terminal terminal( 20, 5 );
+	terminal.receive( "hello world" );
 
-private Q_SLOTS:
-    void printsPlainOutput();
-    void cursorPositioning();
-    void sgrSetsColours();
-    void sgr256AndTrueColour();
-    void boldAndResetAreTracked();
-    void alternateScreenIsSeparate();
-    void titleIsExtractedFromOsc();
-    void titleStripsControlCharacters();
-    void deviceStatusReportIsAnswered();
-    void bracketedPasteModeToggles();
-    void mouseTrackingModeToggles();
-    void eraseDisplayClearsEverything();
-    void lineDrawingCharsetIsApplied();
-    void resetRestoresDefaults();
-};
-
-void TestTerminal::printsPlainOutput()
-{
-    Terminal terminal(20, 5);
-    terminal.receive(QByteArrayLiteral("hello world"));
-
-    QCOMPARE(rowText(terminal, 0), QStringLiteral("hello world"));
+	CHECK( row_text( terminal, 0 ) == "hello world" );
 }
 
-void TestTerminal::cursorPositioning()
-{
-    Terminal terminal(20, 5);
-    terminal.receive(QByteArrayLiteral("\033[3;5Hx"));
+TEST_CASE( "cursor positioning", "[terminal]" ){
+	Terminal terminal( 20, 5 );
+	terminal.receive( "\033[3;5Hx" );
 
-    QCOMPARE(terminal.screen().cursor().row, 2);
-    QCOMPARE(rowText(terminal, 2), QStringLiteral("    x"));
+	CHECK( terminal.screen().cursor().row == 2 );
+	CHECK( row_text( terminal, 2 ) == "    x" );
 }
 
-void TestTerminal::sgrSetsColours()
-{
-    Terminal terminal(20, 5);
-    terminal.receive(QByteArrayLiteral("\033[31mred\033[0mplain"));
+TEST_CASE( "SGR sets colours", "[terminal]" ){
+	Terminal terminal( 20, 5 );
+	terminal.receive( "\033[31mred\033[0mplain" );
 
-    const Cell &red = terminal.screen().line(0)[0];
-    QCOMPARE(red.attributes.foreground.kind(), Color::Kind::Indexed);
-    QCOMPARE(red.attributes.foreground.index(), 1);
+	Cell const& red = terminal.screen().line( 0 )[0];
+	CHECK( red.attributes.foreground.kind() == Color::Kind::INDEXED );
+	CHECK( red.attributes.foreground.index() == 1 );
 
-    const Cell &plain = terminal.screen().line(0)[3];
-    QVERIFY(plain.attributes.foreground.isDefault());
+	Cell const& plain = terminal.screen().line( 0 )[3];
+	CHECK( plain.attributes.foreground.is_default() );
 }
 
-void TestTerminal::sgr256AndTrueColour()
-{
-    Terminal terminal(20, 5);
-    terminal.receive(QByteArrayLiteral("\033[38;5;208mA\033[38;2;10;20;30mB"));
+TEST_CASE( "SGR 256 and true colour", "[terminal]" ){
+	Terminal terminal( 20, 5 );
+	terminal.receive( "\033[38;5;208mA\033[38;2;10;20;30mB" );
 
-    const Cell &indexed = terminal.screen().line(0)[0];
-    QCOMPARE(indexed.attributes.foreground.kind(), Color::Kind::Indexed);
-    QCOMPARE(indexed.attributes.foreground.index(), 208);
+	Cell const& indexed = terminal.screen().line( 0 )[0];
+	CHECK( indexed.attributes.foreground.kind() == Color::Kind::INDEXED );
+	CHECK( indexed.attributes.foreground.index() == 208 );
 
-    const Cell &rgb = terminal.screen().line(0)[1];
-    QCOMPARE(rgb.attributes.foreground.kind(), Color::Kind::Rgb);
-    QCOMPARE(rgb.attributes.foreground.red(), 10);
-    QCOMPARE(rgb.attributes.foreground.green(), 20);
-    QCOMPARE(rgb.attributes.foreground.blue(), 30);
+	Cell const& rgb = terminal.screen().line( 0 )[1];
+	CHECK( rgb.attributes.foreground.kind() == Color::Kind::RGB );
+	CHECK( rgb.attributes.foreground.red() == 10 );
+	CHECK( rgb.attributes.foreground.green() == 20 );
+	CHECK( rgb.attributes.foreground.blue() == 30 );
 }
 
-void TestTerminal::boldAndResetAreTracked()
-{
-    Terminal terminal(20, 5);
-    terminal.receive(QByteArrayLiteral("\033[1mB\033[22mN"));
+TEST_CASE( "bold and reset are tracked", "[terminal]" ){
+	Terminal terminal( 20, 5 );
+	terminal.receive( "\033[1mB\033[22mN" );
 
-    QVERIFY(hasFlag(terminal.screen().line(0)[0].attributes.flags, CellFlag::Bold));
-    QVERIFY(!hasFlag(terminal.screen().line(0)[1].attributes.flags, CellFlag::Bold));
+	CHECK( has_flag( terminal.screen().line( 0 )[0].attributes.flags, CellFlag::BOLD ) );
+	CHECK_FALSE( has_flag( terminal.screen().line( 0 )[1].attributes.flags, CellFlag::BOLD ) );
 }
 
-void TestTerminal::alternateScreenIsSeparate()
-{
-    Terminal terminal(20, 5);
-    terminal.receive(QByteArrayLiteral("normal"));
+TEST_CASE( "the alternate screen is separate", "[terminal]" ){
+	Terminal terminal( 20, 5 );
+	terminal.receive( "normal" );
 
-    terminal.receive(QByteArrayLiteral("\033[?1049h"));
-    QVERIFY(terminal.modes().alternateScreen);
-    QCOMPARE(rowText(terminal, 0), QString());
+	terminal.receive( "\033[?1049h" );
+	CHECK( terminal.modes().alternate_screen );
+	CHECK( row_text( terminal, 0 ).empty() );
 
-    terminal.receive(QByteArrayLiteral("alt"));
-    QCOMPARE(rowText(terminal, 0), QStringLiteral("alt"));
+	terminal.receive( "alt" );
+	CHECK( row_text( terminal, 0 ) == "alt" );
 
-    terminal.receive(QByteArrayLiteral("\033[?1049l"));
-    QVERIFY(!terminal.modes().alternateScreen);
-    QCOMPARE(rowText(terminal, 0), QStringLiteral("normal"));
+	terminal.receive( "\033[?1049l" );
+	CHECK_FALSE( terminal.modes().alternate_screen );
+	CHECK( row_text( terminal, 0 ) == "normal" );
 }
 
-void TestTerminal::titleIsExtractedFromOsc()
-{
-    Terminal terminal(20, 5);
-    QSignalSpy spy(&terminal, &Terminal::titleChanged);
+TEST_CASE( "the title is extracted from OSC", "[terminal]" ){
+	Terminal                 terminal( 20, 5 );
+	std::vector<std::string> seen;
+	terminal.title_changed.connect( [&seen]( std::string const& title ){ seen.push_back( title ); } );
 
-    terminal.receive(QByteArrayLiteral("\033]0;build-01\007"));
+	terminal.receive( "\033]0;build-01\007" );
 
-    QCOMPARE(spy.count(), 1);
-    QCOMPARE(terminal.title(), QStringLiteral("build-01"));
+	CHECK( seen.size() == 1 );
+	CHECK( terminal.title() == "build-01" );
 }
 
-void TestTerminal::titleStripsControlCharacters()
-{
-    Terminal terminal(20, 5);
-    // A hostile host must not be able to smuggle an escape sequence into the
-    // tab bar through the window title.
-    terminal.receive(QByteArray("\033]2;bad\x1b[31mtitle\007", 20));
+TEST_CASE( "a hostile title cannot smuggle an escape sequence", "[terminal]" ){
+	Terminal terminal( 20, 5 );
 
-    QVERIFY(!terminal.title().contains(QChar(0x1B)));
+	// An ESC inside the OSC abandons the sequence outright, so no title is set.
+	terminal.receive( "\033]2;bad\033[31mtitle\007" );
+	CHECK( terminal.title().empty() );
+
+	// Control bytes that do reach the payload are filtered out of it instead.
+	terminal.receive( "\033]2;ho\001st\177-01\007" );
+	CHECK( terminal.title() == "host-01" );
 }
 
-void TestTerminal::deviceStatusReportIsAnswered()
-{
-    Terminal terminal(20, 5);
-    QSignalSpy spy(&terminal, &Terminal::reply);
+TEST_CASE( "OSC 52 writes the clipboard, but never reads it", "[terminal]" ){
+	Terminal    terminal( 20, 5 );
+	std::string written;
+	int         requests = 0;
+	terminal.clipboard_write_requested.connect( [&]( std::string const& text ){
+		written = text;
+		++requests;
+	} );
 
-    terminal.receive(QByteArrayLiteral("\033[3;7H\033[6n"));
+	terminal.receive( "\033]52;c;aGVsbG8gd29ybGQ=\007" );
+	CHECK( requests == 1 );
+	CHECK( written == "hello world" );
 
-    QCOMPARE(spy.count(), 1);
-    QCOMPARE(spy.first().first().toByteArray(), QByteArrayLiteral("\033[3;7R"));
+	// "?" asks for the local clipboard contents; that request is refused.
+	terminal.receive( "\033]52;c;?\007" );
+	CHECK( requests == 1 );
 }
 
-void TestTerminal::bracketedPasteModeToggles()
-{
-    Terminal terminal(20, 5);
-    QVERIFY(!terminal.modes().bracketedPaste);
+TEST_CASE( "the device status report is answered", "[terminal]" ){
+	Terminal                 terminal( 20, 5 );
+	std::vector<std::string> replies;
+	terminal.reply.connect( [&replies]( std::string const& data ){ replies.push_back( data ); } );
 
-    terminal.receive(QByteArrayLiteral("\033[?2004h"));
-    QVERIFY(terminal.modes().bracketedPaste);
+	terminal.receive( "\033[3;7H\033[6n" );
 
-    terminal.receive(QByteArrayLiteral("\033[?2004l"));
-    QVERIFY(!terminal.modes().bracketedPaste);
+	REQUIRE( replies.size() == 1 );
+	CHECK( replies.front() == "\033[3;7R" );
 }
 
-void TestTerminal::mouseTrackingModeToggles()
-{
-    Terminal terminal(20, 5);
+TEST_CASE( "bracketed paste mode toggles", "[terminal]" ){
+	Terminal terminal( 20, 5 );
+	CHECK_FALSE( terminal.modes().bracketed_paste );
 
-    terminal.receive(QByteArrayLiteral("\033[?1002h\033[?1006h"));
-    QCOMPARE(terminal.modes().mouseTracking, MouseTracking::ButtonEvent);
-    QCOMPARE(terminal.modes().mouseEncoding, MouseEncoding::Sgr);
+	terminal.receive( "\033[?2004h" );
+	CHECK( terminal.modes().bracketed_paste );
 
-    terminal.receive(QByteArrayLiteral("\033[?1002l"));
-    QCOMPARE(terminal.modes().mouseTracking, MouseTracking::Off);
+	terminal.receive( "\033[?2004l" );
+	CHECK_FALSE( terminal.modes().bracketed_paste );
 }
 
-void TestTerminal::eraseDisplayClearsEverything()
-{
-    Terminal terminal(20, 5);
-    terminal.receive(QByteArrayLiteral("line one\r\nline two"));
-    terminal.receive(QByteArrayLiteral("\033[2J"));
+TEST_CASE( "mouse tracking mode toggles", "[terminal]" ){
+	Terminal terminal( 20, 5 );
 
-    QCOMPARE(rowText(terminal, 0), QString());
-    QCOMPARE(rowText(terminal, 1), QString());
+	terminal.receive( "\033[?1002h\033[?1006h" );
+	CHECK( terminal.modes().mouse_tracking == MouseTracking::BUTTON_EVENT );
+	CHECK( terminal.modes().mouse_encoding == MouseEncoding::SGR );
+
+	terminal.receive( "\033[?1002l" );
+	CHECK( terminal.modes().mouse_tracking == MouseTracking::OFF );
 }
 
-void TestTerminal::lineDrawingCharsetIsApplied()
-{
-    Terminal terminal(20, 5);
-    // ESC ( 0 selects DEC special graphics for G0; 'q' becomes a horizontal line.
-    terminal.receive(QByteArrayLiteral("\033(0qqq\033(B"));
+TEST_CASE( "erase display clears everything", "[terminal]" ){
+	Terminal terminal( 20, 5 );
+	terminal.receive( "line one\r\nline two" );
+	terminal.receive( "\033[2J" );
 
-    QCOMPARE(rowText(terminal, 0), QStringLiteral("───"));
+	CHECK( row_text( terminal, 0 ).empty() );
+	CHECK( row_text( terminal, 1 ).empty() );
 }
 
-void TestTerminal::resetRestoresDefaults()
-{
-    Terminal terminal(20, 5);
-    terminal.receive(QByteArrayLiteral("\033[?1049h\033[31mtext\033[?7l"));
+TEST_CASE( "the line drawing charset is applied", "[terminal]" ){
+	Terminal terminal( 20, 5 );
+	// ESC ( 0 selects DEC special graphics for G0; 'q' becomes a horizontal line.
+	terminal.receive( "\033(0qqq\033(B" );
 
-    terminal.reset();
-
-    QVERIFY(!terminal.modes().alternateScreen);
-    QVERIFY(terminal.modes().autoWrap);
-    QVERIFY(terminal.currentAttributes().foreground.isDefault());
-    QCOMPARE(rowText(terminal, 0), QString());
+	CHECK( row_text( terminal, 0 ) == "───" );
 }
 
-QTEST_MAIN(TestTerminal)
+TEST_CASE( "reset restores the defaults", "[terminal]" ){
+	Terminal terminal( 20, 5 );
+	terminal.receive( "\033[?1049h\033[31mtext\033[?7l" );
 
-#include "tst_terminal.moc"
+	terminal.reset();
+
+	CHECK_FALSE( terminal.modes().alternate_screen );
+	CHECK( terminal.modes().auto_wrap );
+	CHECK( terminal.current_attributes().foreground.is_default() );
+	CHECK( row_text( terminal, 0 ).empty() );
+}

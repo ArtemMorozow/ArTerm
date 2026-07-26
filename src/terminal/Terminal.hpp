@@ -1,143 +1,148 @@
 #pragma once
 
-#include "terminal/Screen.hpp"
-#include "terminal/VtParser.hpp"
-
-#include <QObject>
-#include <QString>
+#include "core/signal.hpp"
+#include "terminal/screen.hpp"
+#include "terminal/vt_parser.hpp"
 
 #include <array>
+#include <cstdint>
 #include <memory>
+#include <string>
+#include <string_view>
 
-namespace arterm::term {
+namespace arterm::term
+{
 
-/// How the application asked for mouse events to be reported.
-enum class MouseTracking {
-    Off,
-    X10,        ///< 9: press only.
-    Normal,     ///< 1000: press and release.
-    ButtonEvent,///< 1002: press, release and drag.
-    AnyEvent,   ///< 1003: everything including plain motion.
-};
+	/// How the application asked for mouse events to be reported.
+	enum class MouseTracking{
+		OFF,
+		X10,          ///< 9: press only.
+		NORMAL,       ///< 1000: press and release.
+		BUTTON_EVENT, ///< 1002: press, release and drag.
+		ANY_EVENT,    ///< 1003: everything including plain motion.
+	};
 
-enum class MouseEncoding {
-    Default, ///< Legacy 0x20-offset byte encoding.
-    Utf8,    ///< 1005.
-    Sgr,     ///< 1006, the only one that survives past column 223.
-    Urxvt,   ///< 1015.
-};
+	enum class MouseEncoding{
+		DEFAULT, ///< Legacy 0x20-offset byte encoding.
+		UTF8,    ///< 1005.
+		SGR,     ///< 1006, the only one that survives past column 223.
+		URXVT,   ///< 1015.
+	};
 
-/// The DEC/xterm modes ArTerm honours.
-struct TerminalModes {
-    bool autoWrap{true};             ///< DECAWM (7).
-    bool originMode{false};          ///< DECOM (6).
-    bool insertMode{false};          ///< IRM (4).
-    bool cursorVisible{true};        ///< DECTCEM (25).
-    bool applicationCursorKeys{false}; ///< DECCKM (1).
-    bool applicationKeypad{false};   ///< DECKPAM.
-    bool reverseVideo{false};        ///< DECSCNM (5).
-    bool bracketedPaste{false};      ///< 2004.
-    bool newLineMode{false};         ///< LNM (20).
-    bool focusReporting{false};      ///< 1004.
-    bool alternateScreen{false};     ///< 1047/1049.
+	/// The DEC/xterm modes ArTerm honours.
+	struct TerminalModes
+	{
+		bool auto_wrap{ true };                ///< DECAWM (7).
+		bool origin_mode{ false };             ///< DECOM (6).
+		bool insert_mode{ false };             ///< IRM (4).
+		bool cursor_visible{ true };           ///< DECTCEM (25).
+		bool application_cursor_keys{ false }; ///< DECCKM (1).
+		bool application_keypad{ false };      ///< DECKPAM.
+		bool reverse_video{ false };           ///< DECSCNM (5).
+		bool bracketed_paste{ false };         ///< 2004.
+		bool new_line_mode{ false };           ///< LNM (20).
+		bool focus_reporting{ false };         ///< 1004.
+		bool alternate_screen{ false };        ///< 1047/1049.
 
-    MouseTracking mouseTracking{MouseTracking::Off};
-    MouseEncoding mouseEncoding{MouseEncoding::Default};
-};
+		MouseTracking mouse_tracking{ MouseTracking::OFF };
+		MouseEncoding mouse_encoding{ MouseEncoding::DEFAULT };
+	};
 
-/// A complete VT100/xterm emulator: feed it bytes, read a screen back.
-///
-/// The class is GUI-free; `TerminalWidget` renders whatever it exposes. That
-/// split is what makes the emulator testable without a running QApplication.
-class Terminal : public QObject, private VtHandler {
-    Q_OBJECT
+	/// A complete VT100/xterm emulator: feed it bytes, read a screen back.
+	///
+	/// The class is GUI-free - the AppKit view renders whatever it exposes - which
+	/// is what lets the emulator be tested without an application running.
+	///
+	/// Signals fire synchronously on the caller's thread. `receive` is driven from
+	/// the session queue, so a slot that touches the UI marshals with `on_main`.
+	class Terminal : private VtHandler
+	{
+	public:
+		Terminal( int columns, int rows );
+		~Terminal() override;
 
-public:
-    Terminal(int columns, int rows, QObject *parent = nullptr);
-    ~Terminal() override;
+		Terminal( Terminal const& )            = delete;
+		Terminal& operator=( Terminal const& ) = delete;
 
-    /// Feed bytes received from the remote shell.
-    void receive(const QByteArray &data);
+		/// Feed bytes received from the remote shell.
+		void receive( std::string_view data );
 
-    void resize(int columns, int rows);
-    void reset();
+		void resize( int columns, int rows );
+		void reset();
 
-    [[nodiscard]] int columns() const noexcept { return m_columns; }
-    [[nodiscard]] int rows() const noexcept { return m_rows; }
+		[[nodiscard]] int columns() const noexcept { return _columns; }
+		[[nodiscard]] int rows() const noexcept { return _rows; }
 
-    /// The buffer currently displayed (normal or alternate).
-    [[nodiscard]] const Screen &screen() const { return *m_active; }
-    [[nodiscard]] Screen &screen() { return *m_active; }
+		/// The buffer currently displayed (normal or alternate).
+		[[nodiscard]] Screen const& screen() const { return *_active; }
+		[[nodiscard]] Screen&       screen() { return *_active; }
 
-    [[nodiscard]] const TerminalModes &modes() const noexcept { return m_modes; }
-    [[nodiscard]] const Attributes &currentAttributes() const noexcept { return m_attributes; }
-    [[nodiscard]] const QString &title() const noexcept { return m_title; }
+		[[nodiscard]] TerminalModes const& modes() const noexcept { return _modes; }
+		[[nodiscard]] Attributes const&    current_attributes() const noexcept { return _attributes; }
+		[[nodiscard]] std::string const&   title() const noexcept { return _title; }
 
-    void setScrollbackLimit(int lines);
-    [[nodiscard]] int scrollbackLimit() const noexcept { return m_scrollbackLimit; }
+		void              set_scrollback_limit( int lines );
+		[[nodiscard]] int scrollback_limit() const noexcept { return _scrollback_limit; }
 
-    /// Bumped on every change; the widget uses it to skip redundant repaints.
-    [[nodiscard]] quint64 revision() const noexcept { return m_active->revision() + m_revisionBase; }
+		/// Bumped on every change; the widget uses it to skip redundant repaints.
+		[[nodiscard]] std::uint64_t revision() const noexcept { return _active->revision() + _revision_base; }
 
-Q_SIGNALS:
-    /// Bytes the emulator wants sent back to the host (DA, DSR, ...).
-    void reply(const QByteArray &data);
-    void titleChanged(const QString &title);
-    void bellRang();
-    void screenChanged();
-    void alternateScreenChanged(bool active);
-    void mouseTrackingChanged(arterm::term::MouseTracking tracking);
-    void bracketedPasteChanged(bool enabled);
-    /// OSC 52: the remote side wants to put `text` on the local clipboard.
-    void clipboardWriteRequested(const QString &text);
+		/// Bytes the emulator wants sent back to the host (DA, DSR, ...).
+		Signal<std::string const&> reply;
+		Signal<std::string const&> title_changed;
+		Signal<>                   bell_rang;
+		Signal<>                   screen_changed;
+		Signal<bool>               alternate_screen_changed;
+		Signal<MouseTracking>      mouse_tracking_changed;
+		Signal<bool>               bracketed_paste_changed;
+		/// OSC 52: the remote side wants to put `text` on the local clipboard.
+		Signal<std::string const&> clipboard_write_requested;
 
-private:
-    // VtHandler.
-    void print(char32_t codePoint) override;
-    void execute(std::uint8_t control) override;
-    void csiDispatch(const CsiSequence &sequence) override;
-    void escDispatch(const EscSequence &sequence) override;
-    void oscDispatch(const QByteArray &payload) override;
+	private:
+		// VtHandler.
+		void print( char32_t code_point ) override;
+		void execute( std::uint8_t control ) override;
+		void csi_dispatch( CsiSequence const& sequence ) override;
+		void esc_dispatch( EscSequence const& sequence ) override;
+		void osc_dispatch( std::string const& payload ) override;
 
-    void applySgr(const CsiSequence &sequence);
-    void setMode(const CsiSequence &sequence, bool enabled);
-    void setPrivateMode(int mode, bool enabled);
-    void useAlternateScreen(bool enabled, bool clearOnEnter);
-    void reportDeviceStatus(const CsiSequence &sequence);
-    void saveCursor();
-    void restoreCursor();
-    void softReset();
+		void apply_sgr( CsiSequence const& sequence );
+		void set_mode( CsiSequence const& sequence, bool enabled );
+		void set_private_mode( int mode, bool enabled );
+		void use_alternate_screen( bool enabled, bool clear_on_enter );
+		void report_device_status( CsiSequence const& sequence );
+		void save_cursor();
+		void restore_cursor();
+		void soft_reset();
 
-    /// Translate through the active G0/G1 charset (DEC line drawing).
-    [[nodiscard]] char32_t translate(char32_t codePoint) const;
+		/// Translate through the active G0/G1 charset (DEC line drawing).
+		[[nodiscard]] char32_t translate( char32_t code_point ) const;
 
-    int m_columns;
-    int m_rows;
-    int m_scrollbackLimit{10'000};
+		int _columns;
+		int _rows;
+		int _scrollback_limit{ 10'000 };
 
-    std::unique_ptr<Screen> m_normal;
-    std::unique_ptr<Screen> m_alternate;
-    Screen *m_active{nullptr};
+		std::unique_ptr<Screen> _normal;
+		std::unique_ptr<Screen> _alternate;
+		Screen*                 _active{ nullptr };
 
-    VtParser m_parser;
-    TerminalModes m_modes;
-    Attributes m_attributes;
-    QString m_title;
+		VtParser      _parser;
+		TerminalModes _modes;
+		Attributes    _attributes;
+		std::string   _title;
 
-    CursorState m_savedCursor;
-    CursorState m_savedAlternateCursor;
+		CursorState _saved_cursor;
+		CursorState _saved_alternate_cursor;
 
-    /// 0 = US ASCII, 1 = DEC special graphics. Index 0/1 are G0/G1.
-    std::array<int, 2> m_charsets{0, 0};
-    int m_activeCharset{0};
+		/// 0 = US ASCII, 1 = DEC special graphics. Index 0/1 are G0/G1.
+		std::array<int, 2> _charsets{ 0, 0 };
+		int                _active_charset{ 0 };
 
-    /// Offset keeping `revision()` monotonic across a buffer switch.
-    quint64 m_revisionBase{0};
+		/// Offset keeping `revision()` monotonic across a buffer switch.
+		std::uint64_t _revision_base{ 0 };
 
-    /// Coalesces the `screenChanged` signal to once per batch of input.
-    bool m_dirty{false};
-};
+		/// Coalesces the `screen_changed` signal to once per batch of input.
+		bool _dirty{ false };
+	};
 
 } // namespace arterm::term
-
-Q_DECLARE_METATYPE(arterm::term::MouseTracking)

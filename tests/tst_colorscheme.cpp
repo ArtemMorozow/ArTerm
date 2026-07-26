@@ -1,114 +1,96 @@
-#include "terminal/ColorScheme.hpp"
+#include "terminal/color_scheme.hpp"
 
-#include <QTest>
+#include <catch2/catch_test_macros.hpp>
 
+#include <format>
+
+using namespace arterm;
 using namespace arterm::term;
 
-class TestColorScheme : public QObject {
-    Q_OBJECT
-
-private Q_SLOTS:
-    void defaultConstructionTerminates();
-    void namedSchemesAreDistinct();
-    void paletteIsFullyPopulated();
-    void colourCubeMatchesXterm();
-    void greyscaleRampIsMonotonic();
-    void defaultColourFollowsTheScheme();
-    void boldBrightensTheBaseColours();
-    void rgbIsPassedThrough();
-    void byNameFallsBackToDark();
-};
-
-void TestColorScheme::defaultConstructionTerminates()
+namespace
 {
-    // Regression: the default constructor used to call arTermDark(), which
-    // default-constructed another scheme, recursing until the stack overflowed.
-    ColorScheme scheme;
-    QCOMPARE(scheme.name(), QStringLiteral("ArTerm Dark"));
-    QVERIFY(scheme.background().isValid());
+
+	/// Rgb has no "unset" state the way QColor did, so a populated slot is one
+	/// that is opaque - `fill_cube` and the named schemes set every one of them.
+	bool is_set( Rgb color ){
+		return color.alpha == 0xFF;
+	}
+
+} // namespace
+
+TEST_CASE( "default construction terminates", "[colorscheme]" ){
+	// Regression: the default constructor used to call arterm_dark(), which
+	// default-constructed another scheme, recursing until the stack overflowed.
+	ColorScheme scheme;
+	CHECK( scheme.name() == "ArTerm Dark" );
+	CHECK( is_set( scheme.background() ) );
 }
 
-void TestColorScheme::namedSchemesAreDistinct()
-{
-    const ColorScheme dark = ColorScheme::arTermDark();
-    const ColorScheme light = ColorScheme::arTermLight();
+TEST_CASE( "named schemes are distinct", "[colorscheme]" ){
+	ColorScheme const dark  = ColorScheme::arterm_dark();
+	ColorScheme const light = ColorScheme::arterm_light();
 
-    QVERIFY(dark.background() != light.background());
-    QVERIFY(dark.background().lightness() < light.background().lightness());
-    QVERIFY(dark.foreground().lightness() > light.foreground().lightness());
+	CHECK( dark.background() != light.background() );
+	CHECK( dark.background().lightness() < light.background().lightness() );
+	CHECK( dark.foreground().lightness() > light.foreground().lightness() );
 }
 
-void TestColorScheme::paletteIsFullyPopulated()
-{
-    const ColorScheme scheme = ColorScheme::arTermDark();
-    for (int i = 0; i < 256; ++i)
-        QVERIFY2(scheme.indexed(static_cast<std::uint8_t>(i)).isValid(),
-                 qPrintable(QStringLiteral("palette slot %1 is unset").arg(i)));
+TEST_CASE( "palette is fully populated", "[colorscheme]" ){
+	ColorScheme const scheme = ColorScheme::arterm_dark();
+	for( int i = 0; i < 256; ++i ){
+		INFO( std::format( "palette slot {}", i ) );
+		REQUIRE( is_set( scheme.indexed( static_cast<std::uint8_t>( i ) ) ) );
+	}
 }
 
-void TestColorScheme::colourCubeMatchesXterm()
-{
-    const ColorScheme scheme = ColorScheme::arTermDark();
+TEST_CASE( "colour cube matches xterm", "[colorscheme]" ){
+	ColorScheme const scheme = ColorScheme::arterm_dark();
 
-    // Slot 16 is the corner of the cube: pure black.
-    QCOMPARE(scheme.indexed(16), QColor(0, 0, 0));
-    // Slot 231 is the opposite corner: pure white.
-    QCOMPARE(scheme.indexed(231), QColor(255, 255, 255));
-    // Slot 196 is 5,0,0 in the cube: full red.
-    QCOMPARE(scheme.indexed(196), QColor(255, 0, 0));
+	// Slot 16 is the corner of the cube: pure black.
+	CHECK( scheme.indexed( 16 ) == Rgb{ 0, 0, 0 } );
+	// Slot 231 is the opposite corner: pure white.
+	CHECK( scheme.indexed( 231 ) == Rgb{ 255, 255, 255 } );
+	// Slot 196 is 5,0,0 in the cube: full red.
+	CHECK( scheme.indexed( 196 ) == Rgb{ 255, 0, 0 } );
 }
 
-void TestColorScheme::greyscaleRampIsMonotonic()
-{
-    const ColorScheme scheme = ColorScheme::arTermDark();
+TEST_CASE( "greyscale ramp is monotonic", "[colorscheme]" ){
+	ColorScheme const scheme = ColorScheme::arterm_dark();
 
-    for (int i = 233; i <= 255; ++i) {
-        const QColor previous = scheme.indexed(static_cast<std::uint8_t>(i - 1));
-        const QColor current = scheme.indexed(static_cast<std::uint8_t>(i));
-        QVERIFY(current.red() > previous.red());
-        QCOMPARE(current.red(), current.green());
-        QCOMPARE(current.green(), current.blue());
-    }
+	for( int i = 233; i <= 255; ++i ){
+		Rgb const previous = scheme.indexed( static_cast<std::uint8_t>( i - 1 ) );
+		Rgb const current  = scheme.indexed( static_cast<std::uint8_t>( i ) );
+		CHECK( current.red > previous.red );
+		CHECK( current.red == current.green );
+		CHECK( current.green == current.blue );
+	}
 }
 
-void TestColorScheme::defaultColourFollowsTheScheme()
-{
-    const ColorScheme scheme = ColorScheme::arTermDark();
+TEST_CASE( "default colour follows the scheme", "[colorscheme]" ){
+	ColorScheme const scheme = ColorScheme::arterm_dark();
 
-    QCOMPARE(scheme.resolve(Color::defaultColor(), /*isForeground=*/true, false), scheme.foreground());
-    QCOMPARE(scheme.resolve(Color::defaultColor(), /*isForeground=*/false, false), scheme.background());
+	CHECK( scheme.resolve( Color::default_color(), /*is_foreground=*/true, false ) == scheme.foreground() );
+	CHECK( scheme.resolve( Color::default_color(), /*is_foreground=*/false, false ) == scheme.background() );
 }
 
-void TestColorScheme::boldBrightensTheBaseColours()
-{
-    const ColorScheme scheme = ColorScheme::arTermDark();
+TEST_CASE( "bold brightens the base colours", "[colorscheme]" ){
+	ColorScheme const scheme = ColorScheme::arterm_dark();
 
-    // "SGR 1;31" must produce bright red, i.e. slot 9 rather than slot 1.
-    const QColor normal = scheme.resolve(Color::indexed(1), true, /*bold=*/false);
-    const QColor bright = scheme.resolve(Color::indexed(1), true, /*bold=*/true);
+	// "SGR 1;31" must produce bright red, i.e. slot 9 rather than slot 1.
+	CHECK( scheme.resolve( Color::indexed( 1 ), true, /*bold=*/false ) == scheme.indexed( 1 ) );
+	CHECK( scheme.resolve( Color::indexed( 1 ), true, /*bold=*/true ) == scheme.indexed( 9 ) );
 
-    QCOMPARE(normal, scheme.indexed(1));
-    QCOMPARE(bright, scheme.indexed(9));
-
-    // Only the first eight slots brighten, and only in the foreground.
-    QCOMPARE(scheme.resolve(Color::indexed(1), false, true), scheme.indexed(1));
-    QCOMPARE(scheme.resolve(Color::indexed(120), true, true), scheme.indexed(120));
+	// Only the first eight slots brighten, and only in the foreground.
+	CHECK( scheme.resolve( Color::indexed( 1 ), false, true ) == scheme.indexed( 1 ) );
+	CHECK( scheme.resolve( Color::indexed( 120 ), true, true ) == scheme.indexed( 120 ) );
 }
 
-void TestColorScheme::rgbIsPassedThrough()
-{
-    const ColorScheme scheme = ColorScheme::arTermDark();
-    QCOMPARE(scheme.resolve(Color::rgb(12, 34, 56), true, false), QColor(12, 34, 56));
+TEST_CASE( "rgb is passed through", "[colorscheme]" ){
+	ColorScheme const scheme = ColorScheme::arterm_dark();
+	CHECK( scheme.resolve( Color::rgb( 12, 34, 56 ), true, false ) == Rgb{ 12, 34, 56 } );
 }
 
-void TestColorScheme::byNameFallsBackToDark()
-{
-    QCOMPARE(ColorScheme::byName(QStringLiteral("ArTerm Light")).name(),
-             QStringLiteral("ArTerm Light"));
-    QCOMPARE(ColorScheme::byName(QStringLiteral("does not exist")).name(),
-             QStringLiteral("ArTerm Dark"));
+TEST_CASE( "by_name falls back to dark", "[colorscheme]" ){
+	CHECK( ColorScheme::by_name( "ArTerm Light" ).name() == "ArTerm Light" );
+	CHECK( ColorScheme::by_name( "does not exist" ).name() == "ArTerm Dark" );
 }
-
-QTEST_MAIN(TestColorScheme)
-
-#include "tst_colorscheme.moc"

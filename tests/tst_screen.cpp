@@ -1,226 +1,211 @@
-#include "terminal/Screen.hpp"
+#include "terminal/screen.hpp"
 
-#include <QTest>
+#include <catch2/catch_test_macros.hpp>
+
+#include <string>
 
 using namespace arterm::term;
 
-namespace {
-
-/// Reads a row back as text so assertions stay readable.
-QString rowText(const Screen &screen, int row)
+namespace
 {
-    QString text;
-    const Line &line = screen.line(row);
-    for (const Cell &cell : line) {
-        if (hasFlag(cell.attributes.flags, CellFlag::WideTrail))
-            continue;
-        text += QString::fromUcs4(&cell.character, 1);
-    }
-    while (text.endsWith(QLatin1Char(' ')))
-        text.chop(1);
-    return text;
-}
 
-void write(Screen &screen, const QString &text, bool autoWrap = true)
-{
-    for (const QChar character : text) {
-        screen.writeCharacter(character.unicode(), 1, Attributes{}, /*insertMode=*/false, autoWrap);
-    }
-}
+	void append_utf8( std::string& out, char32_t code_point ){
+		if( code_point < 0x80 ){
+			out.push_back( static_cast<char>( code_point ) );
+		}
+		else if( code_point < 0x800 ){
+			out.push_back( static_cast<char>( 0xC0 | ( code_point >> 6 ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( code_point & 0x3F ) ) );
+		}
+		else if( code_point < 0x10000 ){
+			out.push_back( static_cast<char>( 0xE0 | ( code_point >> 12 ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( ( code_point >> 6 ) & 0x3F ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( code_point & 0x3F ) ) );
+		}
+		else{
+			out.push_back( static_cast<char>( 0xF0 | ( code_point >> 18 ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( ( code_point >> 12 ) & 0x3F ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( ( code_point >> 6 ) & 0x3F ) ) );
+			out.push_back( static_cast<char>( 0x80 | ( code_point & 0x3F ) ) );
+		}
+	}
+
+	/// Reads a row back as text so assertions stay readable.
+	std::string row_text( Screen const& screen, int row ){
+		std::string text;
+		for( Cell const& cell : screen.line( row ) ){
+			if( has_flag( cell.attributes.flags, CellFlag::WIDE_TRAIL ) )
+				continue;
+			append_utf8( text, cell.character );
+		}
+		while( !text.empty() && text.back() == ' ' )
+			text.pop_back();
+		return text;
+	}
+
+	void write( Screen& screen, std::string_view text, bool auto_wrap = true ){
+		for( char const character : text )
+			screen.write_character( static_cast<char32_t>( character ), 1, Attributes{}, /*insert_mode=*/false,
+									auto_wrap );
+	}
 
 } // namespace
 
-class TestScreen : public QObject {
-    Q_OBJECT
+TEST_CASE( "writes advance the cursor", "[screen]" ){
+	Screen screen( 10, 4, 100 );
+	write( screen, "abc" );
 
-private Q_SLOTS:
-    void writesAdvanceTheCursor();
-    void wrappingIsDeferredToTheNextCharacter();
-    void autoWrapOffOverwritesTheLastColumn();
-    void indexScrollsAtTheBottom();
-    void scrollUpFeedsScrollback();
-    void scrollRegionDoesNotFeedScrollback();
-    void eraseInLineRespectsTheMode();
-    void insertAndDeleteCharacters();
-    void insertAndDeleteLines();
-    void resizePreservesContent();
-    void growingPullsBackFromScrollback();
-    void tabStopsAdvanceByEight();
-    void wideCharactersOccupyTwoColumns();
-};
-
-void TestScreen::writesAdvanceTheCursor()
-{
-    Screen screen(10, 4, 100);
-    write(screen, QStringLiteral("abc"));
-
-    QCOMPARE(rowText(screen, 0), QStringLiteral("abc"));
-    QCOMPARE(screen.cursor().column, 3);
-    QCOMPARE(screen.cursor().row, 0);
+	CHECK( row_text( screen, 0 ) == "abc" );
+	CHECK( screen.cursor().column == 3 );
+	CHECK( screen.cursor().row == 0 );
 }
 
-void TestScreen::wrappingIsDeferredToTheNextCharacter()
-{
-    Screen screen(3, 3, 100);
-    write(screen, QStringLiteral("abc"));
+TEST_CASE( "wrapping is deferred to the next character", "[screen]" ){
+	Screen screen( 3, 3, 100 );
+	write( screen, "abc" );
 
-    // After filling the row the cursor stays put with the wrap pending, so a
-    // sequence that repositions the cursor does not lose a line.
-    QCOMPARE(screen.cursor().row, 0);
-    QCOMPARE(screen.cursor().column, 2);
-    QVERIFY(screen.pendingWrap());
+	// After filling the row the cursor stays put with the wrap pending, so a
+	// sequence that repositions the cursor does not lose a line.
+	CHECK( screen.cursor().row == 0 );
+	CHECK( screen.cursor().column == 2 );
+	CHECK( screen.pending_wrap() );
 
-    write(screen, QStringLiteral("d"));
-    QCOMPARE(screen.cursor().row, 1);
-    QCOMPARE(rowText(screen, 1), QStringLiteral("d"));
-    QVERIFY(screen.isLineWrapped(0));
+	write( screen, "d" );
+	CHECK( screen.cursor().row == 1 );
+	CHECK( row_text( screen, 1 ) == "d" );
+	CHECK( screen.is_line_wrapped( 0 ) );
 }
 
-void TestScreen::autoWrapOffOverwritesTheLastColumn()
-{
-    Screen screen(3, 3, 100);
-    write(screen, QStringLiteral("abcXY"), /*autoWrap=*/false);
+TEST_CASE( "auto wrap off overwrites the last column", "[screen]" ){
+	Screen screen( 3, 3, 100 );
+	write( screen, "abcXY", /*auto_wrap=*/false );
 
-    QCOMPARE(rowText(screen, 0), QStringLiteral("abY"));
-    QCOMPARE(rowText(screen, 1), QString());
+	CHECK( row_text( screen, 0 ) == "abY" );
+	CHECK( row_text( screen, 1 ).empty() );
 }
 
-void TestScreen::indexScrollsAtTheBottom()
-{
-    Screen screen(5, 2, 100);
-    write(screen, QStringLiteral("one"));
-    screen.index(Attributes{});
-    screen.carriageReturn();
-    write(screen, QStringLiteral("two"));
-    screen.index(Attributes{});
-    screen.carriageReturn();
-    write(screen, QStringLiteral("three"));
+TEST_CASE( "index scrolls at the bottom", "[screen]" ){
+	Screen screen( 5, 2, 100 );
+	write( screen, "one" );
+	screen.index( Attributes{} );
+	screen.carriage_return();
+	write( screen, "two" );
+	screen.index( Attributes{} );
+	screen.carriage_return();
+	write( screen, "three" );
 
-    QCOMPARE(rowText(screen, 0), QStringLiteral("two"));
-    QCOMPARE(rowText(screen, 1), QStringLiteral("three"));
+	CHECK( row_text( screen, 0 ) == "two" );
+	CHECK( row_text( screen, 1 ) == "three" );
 }
 
-void TestScreen::scrollUpFeedsScrollback()
-{
-    Screen screen(5, 2, 100);
-    write(screen, QStringLiteral("one"));
-    screen.scrollUp(1, Attributes{});
+TEST_CASE( "scroll up feeds scrollback", "[screen]" ){
+	Screen screen( 5, 2, 100 );
+	write( screen, "one" );
+	screen.scroll_up( 1, Attributes{} );
 
-    QCOMPARE(screen.scrollbackSize(), 1);
-    const Line *history = screen.historyLine(-1);
-    QVERIFY(history != nullptr);
-    QCOMPARE(QString::fromUcs4(&history->at(0).character, 1), QStringLiteral("o"));
+	CHECK( screen.scrollback_size() == 1 );
+	Line const* history = screen.history_line( -1 );
+	REQUIRE( history != nullptr );
+	CHECK( history->at( 0 ).character == U'o' );
 }
 
-void TestScreen::scrollRegionDoesNotFeedScrollback()
-{
-    Screen screen(5, 4, 100);
-    screen.setScrollRegion(1, 2);
-    screen.scrollUp(1, Attributes{});
+TEST_CASE( "a scroll region does not feed scrollback", "[screen]" ){
+	Screen screen( 5, 4, 100 );
+	screen.set_scroll_region( 1, 2 );
+	screen.scroll_up( 1, Attributes{} );
 
-    // A partial region is a pane being redrawn, not history being produced.
-    QCOMPARE(screen.scrollbackSize(), 0);
+	// A partial region is a pane being redrawn, not history being produced.
+	CHECK( screen.scrollback_size() == 0 );
 }
 
-void TestScreen::eraseInLineRespectsTheMode()
-{
-    Screen screen(6, 2, 10);
-    write(screen, QStringLiteral("abcdef"));
-    screen.moveCursor(0, 3);
-    screen.eraseInLine(Screen::EraseMode::ToEnd, Attributes{});
-    QCOMPARE(rowText(screen, 0), QStringLiteral("abc"));
+TEST_CASE( "erase in line respects the mode", "[screen]" ){
+	Screen screen( 6, 2, 10 );
+	write( screen, "abcdef" );
+	screen.move_cursor( 0, 3 );
+	screen.erase_in_line( Screen::EraseMode::TO_END, Attributes{} );
+	CHECK( row_text( screen, 0 ) == "abc" );
 
-    write(screen, QStringLiteral("XYZ"));
-    screen.moveCursor(0, 3);
-    screen.eraseInLine(Screen::EraseMode::ToStart, Attributes{});
-    QCOMPARE(rowText(screen, 0), QStringLiteral("    YZ"));
+	write( screen, "XYZ" );
+	screen.move_cursor( 0, 3 );
+	screen.erase_in_line( Screen::EraseMode::TO_START, Attributes{} );
+	CHECK( row_text( screen, 0 ) == "    YZ" );
 }
 
-void TestScreen::insertAndDeleteCharacters()
-{
-    Screen screen(6, 2, 10);
-    write(screen, QStringLiteral("abcdef"));
+TEST_CASE( "insert and delete characters", "[screen]" ){
+	Screen screen( 6, 2, 10 );
+	write( screen, "abcdef" );
 
-    screen.moveCursor(0, 2);
-    screen.deleteCharacters(2, Attributes{});
-    QCOMPARE(rowText(screen, 0), QStringLiteral("abef"));
+	screen.move_cursor( 0, 2 );
+	screen.delete_characters( 2, Attributes{} );
+	CHECK( row_text( screen, 0 ) == "abef" );
 
-    screen.moveCursor(0, 2);
-    screen.insertCharacters(1, Attributes{});
-    QCOMPARE(rowText(screen, 0), QStringLiteral("ab ef"));
+	screen.move_cursor( 0, 2 );
+	screen.insert_characters( 1, Attributes{} );
+	CHECK( row_text( screen, 0 ) == "ab ef" );
 }
 
-void TestScreen::insertAndDeleteLines()
-{
-    Screen screen(4, 3, 10);
-    write(screen, QStringLiteral("aaa"));
-    screen.moveCursor(1, 0);
-    write(screen, QStringLiteral("bbb"));
-    screen.moveCursor(2, 0);
-    write(screen, QStringLiteral("ccc"));
+TEST_CASE( "insert and delete lines", "[screen]" ){
+	Screen screen( 4, 3, 10 );
+	write( screen, "aaa" );
+	screen.move_cursor( 1, 0 );
+	write( screen, "bbb" );
+	screen.move_cursor( 2, 0 );
+	write( screen, "ccc" );
 
-    screen.moveCursor(1, 0);
-    screen.insertLines(1, Attributes{});
-    QCOMPARE(rowText(screen, 0), QStringLiteral("aaa"));
-    QCOMPARE(rowText(screen, 1), QString());
-    QCOMPARE(rowText(screen, 2), QStringLiteral("bbb"));
+	screen.move_cursor( 1, 0 );
+	screen.insert_lines( 1, Attributes{} );
+	CHECK( row_text( screen, 0 ) == "aaa" );
+	CHECK( row_text( screen, 1 ).empty() );
+	CHECK( row_text( screen, 2 ) == "bbb" );
 
-    screen.moveCursor(1, 0);
-    screen.deleteLines(1, Attributes{});
-    QCOMPARE(rowText(screen, 1), QStringLiteral("bbb"));
+	screen.move_cursor( 1, 0 );
+	screen.delete_lines( 1, Attributes{} );
+	CHECK( row_text( screen, 1 ) == "bbb" );
 }
 
-void TestScreen::resizePreservesContent()
-{
-    Screen screen(10, 4, 100);
-    write(screen, QStringLiteral("hello"));
+TEST_CASE( "resize preserves content", "[screen]" ){
+	Screen screen( 10, 4, 100 );
+	write( screen, "hello" );
 
-    screen.resize(20, 4);
-    QCOMPARE(rowText(screen, 0), QStringLiteral("hello"));
-    QCOMPARE(screen.columns(), 20);
+	screen.resize( 20, 4 );
+	CHECK( row_text( screen, 0 ) == "hello" );
+	CHECK( screen.columns() == 20 );
 }
 
-void TestScreen::growingPullsBackFromScrollback()
-{
-    Screen screen(6, 2, 100);
-    write(screen, QStringLiteral("first"));
-    screen.scrollUp(1, Attributes{});
-    QCOMPARE(screen.scrollbackSize(), 1);
+TEST_CASE( "growing pulls back from scrollback", "[screen]" ){
+	Screen screen( 6, 2, 100 );
+	write( screen, "first" );
+	screen.scroll_up( 1, Attributes{} );
+	REQUIRE( screen.scrollback_size() == 1 );
 
-    screen.resize(6, 3);
+	screen.resize( 6, 3 );
 
-    // The line that had scrolled off comes back rather than being replaced by
-    // an empty row.
-    QCOMPARE(screen.scrollbackSize(), 0);
-    QCOMPARE(rowText(screen, 0), QStringLiteral("first"));
+	// The line that had scrolled off comes back rather than being replaced by
+	// an empty row.
+	CHECK( screen.scrollback_size() == 0 );
+	CHECK( row_text( screen, 0 ) == "first" );
 }
 
-void TestScreen::tabStopsAdvanceByEight()
-{
-    Screen screen(40, 2, 10);
-    QCOMPARE(screen.nextTabStop(0), 8);
-    QCOMPARE(screen.nextTabStop(8), 16);
-    QCOMPARE(screen.previousTabStop(20), 16);
+TEST_CASE( "tab stops advance by eight", "[screen]" ){
+	Screen screen( 40, 2, 10 );
+	CHECK( screen.next_tab_stop( 0 ) == 8 );
+	CHECK( screen.next_tab_stop( 8 ) == 16 );
+	CHECK( screen.previous_tab_stop( 20 ) == 16 );
 
-    screen.clearAllTabStops();
-    QCOMPARE(screen.nextTabStop(0), 39);
+	screen.clear_all_tab_stops();
+	CHECK( screen.next_tab_stop( 0 ) == 39 );
 }
 
-void TestScreen::wideCharactersOccupyTwoColumns()
-{
-    Screen screen(6, 2, 10);
-    screen.writeCharacter(U'日', 2, Attributes{}, false, true);
+TEST_CASE( "wide characters occupy two columns", "[screen]" ){
+	Screen screen( 6, 2, 10 );
+	screen.write_character( U'日', 2, Attributes{}, false, true );
 
-    QCOMPARE(screen.cursor().column, 2);
-    QVERIFY(hasFlag(screen.line(0)[0].attributes.flags, CellFlag::WideLead));
-    QVERIFY(hasFlag(screen.line(0)[1].attributes.flags, CellFlag::WideTrail));
+	CHECK( screen.cursor().column == 2 );
+	CHECK( has_flag( screen.line( 0 )[0].attributes.flags, CellFlag::WIDE_LEAD ) );
+	CHECK( has_flag( screen.line( 0 )[1].attributes.flags, CellFlag::WIDE_TRAIL ) );
 
-    // Overwriting the lead must clear its orphaned trailer.
-    screen.moveCursor(0, 0);
-    screen.writeCharacter(U'x', 1, Attributes{}, false, true);
-    QVERIFY(!hasFlag(screen.line(0)[1].attributes.flags, CellFlag::WideTrail));
+	// Overwriting the lead must clear its orphaned trailer.
+	screen.move_cursor( 0, 0 );
+	screen.write_character( U'x', 1, Attributes{}, false, true );
+	CHECK_FALSE( has_flag( screen.line( 0 )[1].attributes.flags, CellFlag::WIDE_TRAIL ) );
 }
-
-QTEST_APPLESS_MAIN(TestScreen)
-
-#include "tst_screen.moc"

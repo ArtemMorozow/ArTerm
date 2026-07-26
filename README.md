@@ -4,8 +4,13 @@ An SSH client and SFTP/SCP file manager for macOS, in the spirit of MobaXterm:
 a terminal and a dual-pane file browser in the same window, with drag-and-drop
 transfers between them.
 
-Written in C++ (C++26 where the toolchain supports it), built with clang and
-CMake, using Qt 6 for the interface and libssh2 for the protocol.
+Written in C++23, built with clang and CMake. The interface is AppKit; libssh2
+is the only third-party dependency.
+
+> **Migration in progress.** ArTerm is being moved off Qt onto native AppKit.
+> `core/` and `terminal/` are already pure C++23 and build without Qt; `ssh/`,
+> `model/`, `session/`, `files/` and `ui/` are still Qt and are not compiled
+> yet. See the source list at the bottom of `src/CMakeLists.txt`.
 
 ## What it does
 
@@ -41,23 +46,23 @@ CMake, using Qt 6 for the interface and libssh2 for the protocol.
 ## Building
 
 ```sh
-brew install qt libssh2 cmake ninja
+brew install libssh2 cmake ninja
 
 cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DCMAKE_PREFIX_PATH="$(brew --prefix qt);$(brew --prefix libssh2)"
+  -DCMAKE_PREFIX_PATH="$(brew --prefix libssh2)"
 
 cmake --build build
 ```
 
-The result is `build/src/ArTerm.app`. To bundle the Qt frameworks into it so it
-runs on a machine without Homebrew:
+Once the AppKit layer lands the result is `build/src/ArTerm.app`. Because
+nothing but libssh2 is linked from outside the system, the bundle needs no
+framework deployment step:
 
 ```sh
-cmake --build build --target bundle   # runs macdeployqt
-cmake --build build --target dmg      # produces a .dmg
 cmake --build build --target sign     # ad-hoc signature; override with
                                       # -DARTERM_CODESIGN_IDENTITY="Developer ID..."
+cmake --build build --target dmg      # produces a .dmg
 ```
 
 Universal (arm64 + x86_64) is the default; override with
@@ -71,14 +76,16 @@ ctest --test-dir build --output-on-failure
 
 The suite covers the parser, screen buffer, emulator, key encoding, character
 widths, colour scheme and host store — the parts that are pure logic and
-therefore worth testing. They run headless (`QT_QPA_PLATFORM=offscreen`).
+therefore worth testing. Nothing in it touches the UI, so it needs no display.
+
+The tests are being moved from QTest to Catch2 along with the sources they
+cover; `tests/` currently builds no targets.
 
 ### Other platforms
 
-The build also works on Linux (`apt install qt6-base-dev qt6-svg-dev
-libssh2-1-dev`), which is what CI uses for a smoke build. GCC is accepted there
-and falls back to C++23, since `std::expected` is the only library feature the
-code actually needs. macOS builds are always clang.
+There are none. ArTerm targets macOS 13 and later and talks to AppKit,
+CoreText, libdispatch and Security.framework directly; CMake refuses to
+configure anywhere else.
 
 ## Layout
 
@@ -119,7 +126,7 @@ overrides it.
 - **Dragging to Finder is not supported.** A remote file has no local path, so a
   drag out of the remote pane carries an ArTerm-private payload rather than a
   file URL. Doing it properly needs macOS file promises
-  (`NSFilePromiseProvider`), which Qt does not expose. Dragging *from* Finder
+  (`NSFilePromiseProvider`), which is not wired up yet. Dragging *from* Finder
   into ArTerm works normally.
 - Transfers run one at a time, because they share a single SFTP connection.
 - SCP is a per-host setting that only affects how file contents are copied;

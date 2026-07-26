@@ -1,149 +1,127 @@
-#include "terminal/KeyEncoder.hpp"
+#include "terminal/key_encoder.hpp"
 
-#include <QTest>
+#include <catch2/catch_test_macros.hpp>
+
+#include <string>
 
 using namespace arterm::term;
 
-namespace {
-
-QByteArray encode(int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier,
-                  const QString &text = {}, const KeyEncoder::Options &options = {})
+namespace
 {
-    QKeyEvent event(QEvent::KeyPress, key, modifiers, text);
-    return KeyEncoder::encode(event, options);
-}
+
+	std::string encode( Key key, KeyModifier modifiers = KeyModifier::NONE, std::string text = {},
+						char32_t base = 0, KeyEncoder::Options const& options = {} ){
+		KeyEvent event;
+		event.key            = key;
+		event.modifiers      = modifiers;
+		event.text           = std::move( text );
+		event.base_character = base;
+		return KeyEncoder::encode( event, options );
+	}
+
+	std::size_t count_of( std::string_view haystack, std::string_view needle ){
+		std::size_t found = 0;
+		for( std::size_t at = haystack.find( needle ); at != std::string_view::npos;
+			 at             = haystack.find( needle, at + 1 ) )
+			++found;
+		return found;
+	}
 
 } // namespace
 
-class TestKeyEncoder : public QObject {
-    Q_OBJECT
-
-private Q_SLOTS:
-    void cursorKeysUseCsiByDefault();
-    void cursorKeysUseSs3InApplicationMode();
-    void modifiedCursorKeysUseTheCsiForm();
-    void functionKeys();
-    void controlLettersBecomeC0();
-    void controlPunctuation();
-    void altPrefixesEscape();
-    void backspaceSendsDelete();
-    void enterRespectsNewLineMode();
-    void modifierKeysAloneProduceNothing();
-    void bracketedPasteWrapsTheText();
-    void bracketedPasteCannotBeEscaped();
-    void unbracketedPasteStripsControls();
-};
-
-void TestKeyEncoder::cursorKeysUseCsiByDefault()
-{
-    QCOMPARE(encode(Qt::Key_Up), QByteArrayLiteral("\033[A"));
-    QCOMPARE(encode(Qt::Key_Down), QByteArrayLiteral("\033[B"));
-    QCOMPARE(encode(Qt::Key_Right), QByteArrayLiteral("\033[C"));
-    QCOMPARE(encode(Qt::Key_Left), QByteArrayLiteral("\033[D"));
+TEST_CASE( "cursor keys use CSI by default", "[keyencoder]" ){
+	CHECK( encode( Key::UP ) == "\033[A" );
+	CHECK( encode( Key::DOWN ) == "\033[B" );
+	CHECK( encode( Key::RIGHT ) == "\033[C" );
+	CHECK( encode( Key::LEFT ) == "\033[D" );
 }
 
-void TestKeyEncoder::cursorKeysUseSs3InApplicationMode()
-{
-    KeyEncoder::Options options;
-    options.applicationCursorKeys = true;
+TEST_CASE( "cursor keys use SS3 in application mode", "[keyencoder]" ){
+	KeyEncoder::Options options;
+	options.application_cursor_keys = true;
 
-    QCOMPARE(encode(Qt::Key_Up, Qt::NoModifier, {}, options), QByteArrayLiteral("\033OA"));
-    QCOMPARE(encode(Qt::Key_Home, Qt::NoModifier, {}, options), QByteArrayLiteral("\033OH"));
+	CHECK( encode( Key::UP, KeyModifier::NONE, {}, 0, options ) == "\033OA" );
+	CHECK( encode( Key::HOME, KeyModifier::NONE, {}, 0, options ) == "\033OH" );
 }
 
-void TestKeyEncoder::modifiedCursorKeysUseTheCsiForm()
-{
-    // Modifier parameter: 1 + shift(1) = 2, 1 + ctrl(4) = 5.
-    QCOMPARE(encode(Qt::Key_Right, Qt::ShiftModifier), QByteArrayLiteral("\033[1;2C"));
-    QCOMPARE(encode(Qt::Key_Left, Qt::ControlModifier), QByteArrayLiteral("\033[1;5D"));
+TEST_CASE( "modified cursor keys use the CSI form", "[keyencoder]" ){
+	// Modifier parameter: 1 + shift(1) = 2, 1 + ctrl(4) = 5.
+	CHECK( encode( Key::RIGHT, KeyModifier::SHIFT ) == "\033[1;2C" );
+	CHECK( encode( Key::LEFT, KeyModifier::CONTROL ) == "\033[1;5D" );
 }
 
-void TestKeyEncoder::functionKeys()
-{
-    QCOMPARE(encode(Qt::Key_F1), QByteArrayLiteral("\033OP"));
-    QCOMPARE(encode(Qt::Key_F5), QByteArrayLiteral("\033[15~"));
-    QCOMPARE(encode(Qt::Key_F12), QByteArrayLiteral("\033[24~"));
-    QCOMPARE(encode(Qt::Key_PageUp), QByteArrayLiteral("\033[5~"));
-    QCOMPARE(encode(Qt::Key_Delete), QByteArrayLiteral("\033[3~"));
+TEST_CASE( "function keys", "[keyencoder]" ){
+	CHECK( encode( Key::F1 ) == "\033OP" );
+	CHECK( encode( Key::F5 ) == "\033[15~" );
+	CHECK( encode( Key::F12 ) == "\033[24~" );
+	CHECK( encode( Key::PAGE_UP ) == "\033[5~" );
+	CHECK( encode( Key::DELETE_FORWARD ) == "\033[3~" );
 }
 
-void TestKeyEncoder::controlLettersBecomeC0()
-{
-    QCOMPARE(encode(Qt::Key_C, Qt::ControlModifier, QStringLiteral("c")), QByteArray(1, '\x03'));
-    QCOMPARE(encode(Qt::Key_D, Qt::ControlModifier, QStringLiteral("d")), QByteArray(1, '\x04'));
-    QCOMPARE(encode(Qt::Key_A, Qt::ControlModifier, QStringLiteral("a")), QByteArray(1, '\x01'));
+TEST_CASE( "control letters become C0", "[keyencoder]" ){
+	CHECK( encode( Key::CHARACTER, KeyModifier::CONTROL, "c", U'c' ) == std::string( 1, '\x03' ) );
+	CHECK( encode( Key::CHARACTER, KeyModifier::CONTROL, "d", U'd' ) == std::string( 1, '\x04' ) );
+	CHECK( encode( Key::CHARACTER, KeyModifier::CONTROL, "a", U'a' ) == std::string( 1, '\x01' ) );
 }
 
-void TestKeyEncoder::controlPunctuation()
-{
-    QCOMPARE(encode(Qt::Key_Space, Qt::ControlModifier), QByteArray(1, '\0'));
-    QCOMPARE(encode(Qt::Key_BracketLeft, Qt::ControlModifier), QByteArray(1, '\x1B'));
-    QCOMPARE(encode(Qt::Key_Backslash, Qt::ControlModifier), QByteArray(1, '\x1C'));
+TEST_CASE( "control punctuation", "[keyencoder]" ){
+	CHECK( encode( Key::CHARACTER, KeyModifier::CONTROL, " ", U' ' ) == std::string( 1, '\0' ) );
+	CHECK( encode( Key::CHARACTER, KeyModifier::CONTROL, {}, U'[' ) == std::string( 1, '\x1B' ) );
+	CHECK( encode( Key::CHARACTER, KeyModifier::CONTROL, {}, U'\\' ) == std::string( 1, '\x1C' ) );
 }
 
-void TestKeyEncoder::altPrefixesEscape()
-{
-    const QByteArray encoded = encode(Qt::Key_F, Qt::AltModifier, QStringLiteral("f"));
-    QCOMPARE(encoded, QByteArrayLiteral("\033f"));
+TEST_CASE( "alt prefixes escape", "[keyencoder]" ){
+	CHECK( encode( Key::CHARACTER, KeyModifier::ALT, "f", U'f' ) == "\033f" );
 }
 
-void TestKeyEncoder::backspaceSendsDelete()
-{
-    QCOMPARE(encode(Qt::Key_Backspace), QByteArray(1, '\x7F'));
-
-    // Ctrl inverts the choice so the other byte is still reachable.
-    QCOMPARE(encode(Qt::Key_Backspace, Qt::ControlModifier), QByteArray(1, '\x08'));
-
-    KeyEncoder::Options options;
-    options.backspaceSendsDelete = false;
-    QCOMPARE(encode(Qt::Key_Backspace, Qt::NoModifier, {}, options), QByteArray(1, '\x08'));
+TEST_CASE( "command alone is left to the menu bar", "[keyencoder]" ){
+	CHECK( encode( Key::CHARACTER, KeyModifier::COMMAND, "k", U'k' ).empty() );
 }
 
-void TestKeyEncoder::enterRespectsNewLineMode()
-{
-    QCOMPARE(encode(Qt::Key_Return), QByteArrayLiteral("\r"));
+TEST_CASE( "backspace sends delete", "[keyencoder]" ){
+	CHECK( encode( Key::BACKSPACE ) == std::string( 1, '\x7F' ) );
 
-    KeyEncoder::Options options;
-    options.newLineMode = true;
-    QCOMPARE(encode(Qt::Key_Return, Qt::NoModifier, {}, options), QByteArrayLiteral("\r\n"));
+	// Ctrl inverts the choice so the other byte is still reachable.
+	CHECK( encode( Key::BACKSPACE, KeyModifier::CONTROL ) == std::string( 1, '\x08' ) );
+
+	KeyEncoder::Options options;
+	options.backspace_sends_delete = false;
+	CHECK( encode( Key::BACKSPACE, KeyModifier::NONE, {}, 0, options ) == std::string( 1, '\x08' ) );
 }
 
-void TestKeyEncoder::modifierKeysAloneProduceNothing()
-{
-    QVERIFY(encode(Qt::Key_Shift).isEmpty());
-    QVERIFY(encode(Qt::Key_Control).isEmpty());
-    QVERIFY(encode(Qt::Key_CapsLock).isEmpty());
+TEST_CASE( "enter respects new line mode", "[keyencoder]" ){
+	CHECK( encode( Key::RETURN ) == "\r" );
+
+	KeyEncoder::Options options;
+	options.new_line_mode = true;
+	CHECK( encode( Key::RETURN, KeyModifier::NONE, {}, 0, options ) == "\r\n" );
 }
 
-void TestKeyEncoder::bracketedPasteWrapsTheText()
-{
-    const QByteArray encoded = KeyEncoder::encodePaste(QStringLiteral("ls -la"), true);
-    QCOMPARE(encoded, QByteArrayLiteral("\033[200~ls -la\033[201~"));
+TEST_CASE( "modifier keys alone produce nothing", "[keyencoder]" ){
+	CHECK( encode( Key::MODIFIER ).empty() );
+	CHECK( encode( Key::MODIFIER, KeyModifier::SHIFT ).empty() );
 }
 
-void TestKeyEncoder::bracketedPasteCannotBeEscaped()
-{
-    // Clipboard content containing the end marker must not be able to close the
-    // paste early and have the remainder executed as typed input.
-    const QByteArray encoded =
-        KeyEncoder::encodePaste(QStringLiteral("safe\033[201~rm -rf /"), true);
-
-    QCOMPARE(encoded.count(QByteArrayLiteral("\033[201~")), 1);
-    QVERIFY(encoded.endsWith(QByteArrayLiteral("\033[201~")));
+TEST_CASE( "bracketed paste wraps the text", "[keyencoder]" ){
+	CHECK( KeyEncoder::encode_paste( "ls -la", true ) == "\033[200~ls -la\033[201~" );
 }
 
-void TestKeyEncoder::unbracketedPasteStripsControls()
-{
-    const QByteArray encoded = KeyEncoder::encodePaste(QStringLiteral("a\033[31mb\x07c"), false);
+TEST_CASE( "bracketed paste cannot be escaped", "[keyencoder]" ){
+	// Clipboard content containing the end marker must not be able to close the
+	// paste early and have the remainder executed as typed input.
+	std::string const encoded = KeyEncoder::encode_paste( "safe\033[201~rm -rf /", true );
 
-    QVERIFY(!encoded.contains('\033'));
-    QVERIFY(!encoded.contains('\x07'));
-
-    // Newlines survive, because a multi-line paste is legitimate.
-    const QByteArray multiline = KeyEncoder::encodePaste(QStringLiteral("one\ntwo"), false);
-    QCOMPARE(multiline, QByteArrayLiteral("one\rtwo"));
+	CHECK( count_of( encoded, "\033[201~" ) == 1 );
+	CHECK( encoded.ends_with( "\033[201~" ) );
 }
 
-QTEST_MAIN(TestKeyEncoder)
+TEST_CASE( "unbracketed paste strips controls", "[keyencoder]" ){
+	std::string const encoded = KeyEncoder::encode_paste( "a\033[31mb\x07" "c", false );
 
-#include "tst_keyencoder.moc"
+	CHECK( encoded.find( '\033' ) == std::string::npos );
+	CHECK( encoded.find( '\x07' ) == std::string::npos );
+
+	// Newlines survive, because a multi-line paste is legitimate.
+	CHECK( KeyEncoder::encode_paste( "one\ntwo", false ) == "one\rtwo" );
+	CHECK( KeyEncoder::encode_paste( "one\r\ntwo", false ) == "one\rtwo" );
+}

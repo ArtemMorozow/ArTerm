@@ -7,70 +7,72 @@
 
 class QApplication;
 
-namespace arterm::ui {
+namespace arterm::ui
+{
 
-/// The application's design tokens.
-///
-/// Every colour, radius and spacing value used by the stylesheet lives here.
-/// `Theme::stylesheet()` loads `:/theme/arterm-dark.qss` and substitutes the
-/// `@token` placeholders, so the visual language is defined once and the QSS
-/// stays readable.
-class Theme {
-public:
-    enum class Mode { Dark, Light };
+	/// The application's design tokens.
+	///
+	/// Every colour, radius and spacing value used by the stylesheet lives here.
+	/// `Theme::stylesheet()` loads `:/theme/arterm-dark.qss` and substitutes the
+	/// `@token` placeholders, so the visual language is defined once and the QSS
+	/// stays readable.
+	class Theme
+	{
+	public:
+		enum class Mode { DARK, LIGHT };
 
-    static Theme dark();
-    static Theme light();
+		static Theme dark();
+		static Theme light();
 
-    /// Applies the palette, the stylesheet and the default fonts to `app`.
-    static void apply(QApplication &app, const Theme &theme);
+		/// Applies the palette, the stylesheet and the default fonts to `app`.
+		static void apply( QApplication& app, Theme const& theme );
 
-    /// The theme currently applied.
-    [[nodiscard]] static const Theme &current();
+		/// The theme currently applied.
+		[[nodiscard]] static Theme const& current();
 
-    [[nodiscard]] Mode mode() const noexcept { return m_mode; }
+		[[nodiscard]] Mode mode() const noexcept { return _mode; }
 
-    // -- Surfaces ---------------------------------------------------------
-    QColor canvas;     ///< Window background, the darkest surface.
-    QColor sidebar;    ///< Host list.
-    QColor surface;    ///< Panels and cards.
-    QColor elevated;   ///< Hover states, inputs, menus.
-    QColor terminalBackground;
+		// -- Surfaces ---------------------------------------------------------
+		QColor canvas;   ///< Window background, the darkest surface.
+		QColor sidebar;  ///< Host list.
+		QColor surface;  ///< Panels and cards.
+		QColor elevated; ///< Hover states, inputs, menus.
+		QColor terminal_background;
 
-    // -- Lines ------------------------------------------------------------
-    QColor borderSubtle;
-    QColor borderStrong;
+		// -- Lines ------------------------------------------------------------
+		QColor border_subtle;
+		QColor border_strong;
 
-    // -- Text -------------------------------------------------------------
-    QColor textPrimary;
-    QColor textSecondary;
-    QColor textMuted;
-    QColor textOnAccent;
+		// -- Text -------------------------------------------------------------
+		QColor text_primary;
+		QColor text_secondary;
+		QColor text_muted;
+		QColor text_on_accent;
 
-    // -- Accent and status ------------------------------------------------
-    QColor accent;
-    QColor accentHover;
-    QColor accentSubtle; ///< Selection fills, badges.
-    QColor success;
-    QColor warning;
-    QColor danger;
+		// -- Accent and status ------------------------------------------------
+		QColor accent;
+		QColor accent_hover;
+		QColor accent_subtle; ///< Selection fills, badges.
+		QColor success;
+		QColor warning;
+		QColor danger;
 
-    // -- Metrics ----------------------------------------------------------
-    int radiusSmall{6};
-    int radiusMedium{8};
-    int radiusLarge{12};
+		// -- Metrics ----------------------------------------------------------
+		int radius_small{ 6 };
+		int radius_medium{ 8 };
+		int radius_large{ 12 };
 
-    /// The UI font; the terminal picks its own monospaced family.
-    [[nodiscard]] QFont uiFont() const;
-    [[nodiscard]] QFont monospaceFont() const;
+		/// The UI font; the terminal picks its own monospaced family.
+		[[nodiscard]] QFont ui_font() const;
+		[[nodiscard]] QFont monospace_font() const;
 
-    /// The stylesheet with all tokens resolved.
-    [[nodiscard]] QString stylesheet() const;
+		/// The stylesheet with all tokens resolved.
+		[[nodiscard]] QString stylesheet() const;
 
-private:
-    [[nodiscard]] QHash<QString, QString> tokens() const;
+	private:
+		[[nodiscard]] QHash<QString, QString> tokens() const;
 
-    Mode m_mode{Mode::Dark};
-};
+		Mode _mode{ Mode::DARK };
+	};
 
 } // namespace arterm::ui

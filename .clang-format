@@ -1,0 +1,93 @@
+---
+Language: Cpp
+Standard: Latest
+BasedOnStyle: LLVM
+
+UseTab: ForContinuationAndIndentation
+TabWidth: 4
+IndentWidth: 4
+ContinuationIndentWidth: 4
+ConstructorInitializerIndentWidth: 4
+AccessModifierOffset: -4
+ColumnLimit: 120
+
+NamespaceIndentation: All
+FixNamespaceComments: false
+CompactNamespaces: false
+
+QualifierAlignment: Right
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+
+SpaceBeforeParens: Never
+SpacesInParens: Custom
+SpacesInParensOptions:
+  InConditionalStatements: true
+  InCStyleCasts: false
+  InEmptyParentheses: false
+  Other: true
+SpacesInSquareBrackets: false
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceAfterTemplateKeyword: true
+SpaceAfterCStyleCast: false
+
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel: false
+  AfterClass: true
+  AfterControlStatement: Never
+  AfterEnum: false
+  AfterFunction: false
+  AfterNamespace: true
+  AfterStruct: true
+  AfterUnion: true
+  AfterExternBlock: false
+  BeforeCatch: true
+  BeforeElse: true
+  BeforeLambdaBody: false
+  BeforeWhile: false
+  IndentBraces: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
+
+PackConstructorInitializers: Never
+BreakConstructorInitializers: BeforeComma
+BreakInheritanceList: BeforeColon
+
+AlignConsecutiveAssignments:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+AlignConsecutiveDeclarations:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+AlignAfterOpenBracket: Align
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 0
+AlignEscapedNewlines: Left
+AlignOperands: Align
+
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: All
+AllowShortLoopsOnASingleLine: false
+
+IndentCaseLabels: true
+IndentPPDirectives: BeforeHash
+IndentAccessModifiers: false
+EmptyLineBeforeAccessModifier: LogicalBlock
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 2
+SeparateDefinitionBlocks: Leave
+
+AlwaysBreakTemplateDeclarations: Yes
+SortIncludes: Never
+SortUsingDeclarations: Never
+IncludeBlocks: Preserve
+ReflowComments: true

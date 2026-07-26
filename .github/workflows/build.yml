@@ -7,46 +7,23 @@ on:
 
 jobs:
   macos:
-    name: macOS (clang, C++26)
+    name: macOS (clang, C++23)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: brew install qt libssh2 ninja
+        run: brew install libssh2 ninja
 
       - name: Configure
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DARTERM_WARNINGS_AS_ERRORS=ON \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt);$(brew --prefix libssh2)"
+            -DCMAKE_PREFIX_PATH="$(brew --prefix libssh2)"
 
       - name: Build
         run: cmake --build build
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
-
-  linux:
-    name: Linux smoke build
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qt6-base-dev qt6-svg-dev qt6-base-dev-tools \
-            libssh2-1-dev libgl1-mesa-dev ninja-build
-
-      - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-
-      - name: Build
-        run: cmake --build build
-
-      - name: Test
-        # Xvfb is not needed: the tests set QT_QPA_PLATFORM=offscreen themselves.
         run: ctest --test-dir build --output-on-failure

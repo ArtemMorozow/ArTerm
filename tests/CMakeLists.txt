@@ -1,21 +1,30 @@
-find_package(Qt6 REQUIRED COMPONENTS Test)
+include(FetchContent)
 
-# Each test is a self-contained QTest binary linking against arterm_core.
-set(ARTERM_TESTS
-    tst_vtparser
-    tst_screen
-    tst_terminal
-    tst_keyencoder
-    tst_charwidth
-    tst_colorscheme
-    tst_hoststore)
+FetchContent_Declare(Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG v3.7.1
+    GIT_SHALLOW ON
+    EXCLUDE_FROM_ALL)
 
-foreach(test IN LISTS ARTERM_TESTS)
-    qt_add_executable(${test} ${test}.cpp)
-    target_link_libraries(${test} PRIVATE arterm_core Qt6::Test)
-    set_target_properties(${test} PROPERTIES MACOSX_BUNDLE OFF)
-    add_test(NAME ${test} COMMAND ${test})
+FetchContent_MakeAvailable(Catch2)
 
-    # The tests never open a window; running them headless keeps CI simple.
-    set_tests_properties(${test} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-endforeach()
+list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
+include(Catch)
+
+# One binary for the whole suite: the tests are pure logic and link in
+# milliseconds, so there is nothing to gain from splitting them up.
+add_executable(arterm_tests
+    tst_base64.cpp
+    tst_charwidth.cpp
+    tst_colorscheme.cpp
+    tst_keyencoder.cpp
+    tst_screen.cpp
+    tst_signal.cpp
+    tst_terminal.cpp
+    tst_vtparser.cpp)
+
+target_link_libraries(arterm_tests PRIVATE arterm_core Catch2::Catch2WithMain)
+
+catch_discover_tests(arterm_tests)
+
+# tst_hoststore waits on model/host_store coming off Qt.

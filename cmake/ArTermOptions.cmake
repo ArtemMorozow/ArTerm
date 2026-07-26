@@ -1,24 +1,20 @@
 # Global build configuration for ArTerm.
 #
-# The project targets C++26 built with clang. GCC is tolerated for CI/linux
-# smoke builds but macOS (the shipping platform) is always clang.
+# ArTerm targets macOS only, built with clang against C++23 and the system
+# frameworks.
 
 option(ARTERM_BUILD_TESTS "Build the ArTerm unit tests" ON)
 option(ARTERM_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(ARTERM_ENABLE_ASAN "Build with AddressSanitizer + UBSan" OFF)
 
-# The shipping build is clang + libc++ + C++26. Older toolchains (notably the
-# GCC/libstdc++ combination used for Linux CI smoke builds) fall back to C++23,
-# which is enough for everything the code actually uses - std::expected being
-# the only library feature that matters here.
-include(CheckCXXCompilerFlag)
+# C++23 is a hard requirement: std::expected carries every fallible operation in
+# the codebase and there is no fallback path for a toolchain without it.
+set(ARTERM_CXX_STANDARD 23)
 
-if("cxx_std_26" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
-    set(ARTERM_CXX_STANDARD 26)
-else()
-    set(ARTERM_CXX_STANDARD 23)
-    message(STATUS "C++26 is unavailable with ${CMAKE_CXX_COMPILER_ID} "
-                   "${CMAKE_CXX_COMPILER_VERSION}; falling back to C++23")
+if(NOT "cxx_std_23" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+    message(FATAL_ERROR
+        "ArTerm requires a C++23 toolchain; ${CMAKE_CXX_COMPILER_ID} "
+        "${CMAKE_CXX_COMPILER_VERSION} does not offer one.")
 endif()
 
 set(CMAKE_CXX_STANDARD ${ARTERM_CXX_STANDARD})
@@ -32,13 +28,20 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING "Build type" FORCE)
 endif()
 
+if(NOT APPLE)
+    message(FATAL_ERROR "ArTerm is a macOS-only application.")
+endif()
+
 if(APPLE)
     # Universal binary by default: Apple Silicon first, Intel for compatibility.
     if(NOT CMAKE_OSX_ARCHITECTURES)
         set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "" FORCE)
     endif()
+    # 13.3 rather than 13.0: libc++'s std::format instantiates the floating-point
+    # formatter whatever the format string says, and std::to_chars(long double)
+    # is unavailable before 13.3. Ventura shipped 13.3 in March 2023.
     if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-        set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "" FORCE)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3" CACHE STRING "" FORCE)
     endif()
 endif()
 
@@ -72,8 +75,4 @@ if(ARTERM_ENABLE_ASAN AND NOT MSVC)
 endif()
 
 target_compile_definitions(arterm_flags INTERFACE
-    ARTERM_VERSION="${PROJECT_VERSION}"
-    QT_NO_CAST_FROM_ASCII
-    QT_NO_CAST_TO_ASCII
-    QT_USE_QSTRINGBUILDER
-    $<$<CONFIG:Release>:QT_NO_DEBUG_OUTPUT>)
+    ARTERM_VERSION="${PROJECT_VERSION}")

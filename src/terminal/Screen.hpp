@@ -1,149 +1,151 @@
 #pragma once
 
-#include "terminal/Cell.hpp"
+#include "terminal/cell.hpp"
 
-#include <QVector>
-
+#include <cstdint>
 #include <deque>
 #include <vector>
 
-namespace arterm::term {
+namespace arterm::term
+{
 
-using Line = std::vector<Cell>;
+	using Line = std::vector<Cell>;
 
-/// Cursor position plus the state that DECSC/DECRC must save with it.
-struct CursorState {
-    int row{0};
-    int column{0};
-    Attributes attributes;
-    bool pendingWrap{false};
-    bool originMode{false};
-    int charset{0};
-};
+	/// Cursor position plus the state that DECSC/DECRC must save with it.
+	struct CursorState
+	{
+		int        row{ 0 };
+		int        column{ 0 };
+		Attributes attributes;
+		bool       pending_wrap{ false };
+		bool       origin_mode{ false };
+		int        charset{ 0 };
+	};
 
-/// The character grid of one terminal buffer.
-///
-/// A `Terminal` owns two of these: the normal buffer, which keeps scrollback,
-/// and the alternate buffer used by full-screen programs, which does not.
-class Screen {
-public:
-    Screen(int columns, int rows, int scrollbackLimit);
+	/// The character grid of one terminal buffer.
+	///
+	/// A `Terminal` owns two of these: the normal buffer, which keeps scrollback,
+	/// and the alternate buffer used by full-screen programs, which does not.
+	class Screen
+	{
+	public:
+		Screen( int columns, int rows, int scrollback_limit );
 
-    [[nodiscard]] int columns() const noexcept { return m_columns; }
-    [[nodiscard]] int rows() const noexcept { return m_rows; }
-    [[nodiscard]] int scrollbackSize() const noexcept { return static_cast<int>(m_scrollback.size()); }
-    [[nodiscard]] int scrollbackLimit() const noexcept { return m_scrollbackLimit; }
+		[[nodiscard]] int columns() const noexcept { return _columns; }
+		[[nodiscard]] int rows() const noexcept { return _rows; }
+		[[nodiscard]] int scrollback_size() const noexcept { return static_cast<int>( _scrollback.size() ); }
+		[[nodiscard]] int scrollback_limit() const noexcept { return _scrollback_limit; }
 
-    void setScrollbackLimit(int lines);
+		void set_scrollback_limit( int lines );
 
-    /// Reflow to a new size. Content is anchored to the bottom, matching what
-    /// every other terminal does when a window is resized.
-    void resize(int columns, int rows);
+		/// Reflow to a new size. Content is anchored to the bottom, matching what
+		/// every other terminal does when a window is resized.
+		void resize( int columns, int rows );
 
-    // -- Access ------------------------------------------------------------
+		// -- Access ------------------------------------------------------------
 
-    /// `row` is 0-based within the visible grid.
-    [[nodiscard]] const Line &line(int row) const;
-    [[nodiscard]] Line &line(int row);
+		/// `row` is 0-based within the visible grid.
+		[[nodiscard]] Line const& line( int row ) const;
+		[[nodiscard]] Line&       line( int row );
 
-    /// Row addressed in "history space": negative values index the scrollback,
-    /// with -1 being the most recently scrolled-off line.
-    [[nodiscard]] const Line *historyLine(int offset) const;
+		/// Row addressed in "history space": negative values index the scrollback,
+		/// with -1 being the most recently scrolled-off line.
+		[[nodiscard]] Line const* history_line( int offset ) const;
 
-    [[nodiscard]] const CursorState &cursor() const noexcept { return m_cursor; }
-    [[nodiscard]] CursorState &cursor() noexcept { return m_cursor; }
+		[[nodiscard]] CursorState const& cursor() const noexcept { return _cursor; }
+		[[nodiscard]] CursorState&       cursor() noexcept { return _cursor; }
 
-    // -- Writing -----------------------------------------------------------
+		// -- Writing -----------------------------------------------------------
 
-    /// Place a character at the cursor, honouring wrap and insert mode.
-    void writeCharacter(char32_t codePoint, int width, const Attributes &attributes, bool insertMode,
-                        bool autoWrap);
+		/// Place a character at the cursor, honouring wrap and insert mode.
+		void write_character( char32_t code_point, int width, Attributes const& attributes, bool insert_mode,
+							  bool auto_wrap );
 
-    // -- Cursor movement ---------------------------------------------------
+		// -- Cursor movement ---------------------------------------------------
 
-    void moveCursor(int row, int column);
-    void moveCursorRelative(int rowDelta, int columnDelta);
-    void setColumn(int column);
-    void setRow(int row);
-    void carriageReturn();
+		void move_cursor( int row, int column );
+		void move_cursor_relative( int row_delta, int column_delta );
+		void set_column( int column );
+		void set_row( int row );
+		void carriage_return();
 
-    /// LF / IND: down one line, scrolling the region if already at the bottom.
-    void index(const Attributes &fill);
-    /// RI: up one line, scrolling the region down if already at the top.
-    void reverseIndex(const Attributes &fill);
-    /// NEL.
-    void nextLine(const Attributes &fill);
+		/// LF / IND: down one line, scrolling the region if already at the bottom.
+		void index( Attributes const& fill );
+		/// RI: up one line, scrolling the region down if already at the top.
+		void reverse_index( Attributes const& fill );
+		/// NEL.
+		void next_line( Attributes const& fill );
 
-    // -- Erasing -----------------------------------------------------------
+		// -- Erasing -----------------------------------------------------------
 
-    enum class EraseMode { ToEnd, ToStart, All };
+		enum class EraseMode { TO_END, TO_START, ALL };
 
-    void eraseInLine(EraseMode mode, const Attributes &fill);
-    void eraseInDisplay(EraseMode mode, const Attributes &fill);
-    void eraseCharacters(int count, const Attributes &fill);
-    void clearScrollback();
+		void erase_in_line( EraseMode mode, Attributes const& fill );
+		void erase_in_display( EraseMode mode, Attributes const& fill );
+		void erase_characters( int count, Attributes const& fill );
+		void clear_scrollback();
 
-    // -- Editing -----------------------------------------------------------
+		// -- Editing -----------------------------------------------------------
 
-    void insertLines(int count, const Attributes &fill);
-    void deleteLines(int count, const Attributes &fill);
-    void insertCharacters(int count, const Attributes &fill);
-    void deleteCharacters(int count, const Attributes &fill);
+		void insert_lines( int count, Attributes const& fill );
+		void delete_lines( int count, Attributes const& fill );
+		void insert_characters( int count, Attributes const& fill );
+		void delete_characters( int count, Attributes const& fill );
 
-    void scrollUp(int count, const Attributes &fill);
-    void scrollDown(int count, const Attributes &fill);
+		void scroll_up( int count, Attributes const& fill );
+		void scroll_down( int count, Attributes const& fill );
 
-    // -- Scroll region -----------------------------------------------------
+		// -- Scroll region -----------------------------------------------------
 
-    void setScrollRegion(int top, int bottom);
-    [[nodiscard]] int scrollTop() const noexcept { return m_scrollTop; }
-    [[nodiscard]] int scrollBottom() const noexcept { return m_scrollBottom; }
-    void resetScrollRegion();
+		void              set_scroll_region( int top, int bottom );
+		[[nodiscard]] int scroll_top() const noexcept { return _scroll_top; }
+		[[nodiscard]] int scroll_bottom() const noexcept { return _scroll_bottom; }
+		void              reset_scroll_region();
 
-    // -- Tab stops ---------------------------------------------------------
+		// -- Tab stops ---------------------------------------------------------
 
-    void setTabStop(int column);
-    void clearTabStop(int column);
-    void clearAllTabStops();
-    void resetTabStops();
-    [[nodiscard]] int nextTabStop(int column) const;
-    [[nodiscard]] int previousTabStop(int column) const;
+		void              set_tab_stop( int column );
+		void              clear_tab_stop( int column );
+		void              clear_all_tab_stops();
+		void              reset_tab_stops();
+		[[nodiscard]] int next_tab_stop( int column ) const;
+		[[nodiscard]] int previous_tab_stop( int column ) const;
 
-    // -- Misc --------------------------------------------------------------
+		// -- Misc --------------------------------------------------------------
 
-    void reset(const Attributes &fill);
-    void fillWith(char32_t codePoint, const Attributes &attributes);
+		void reset( Attributes const& fill );
+		void fill_with( char32_t code_point, Attributes const& attributes );
 
-    /// True when the cursor sits one past the last column and the next
-    /// printable character must wrap first.
-    [[nodiscard]] bool pendingWrap() const noexcept { return m_cursor.pendingWrap; }
+		/// True when the cursor sits one past the last column and the next
+		/// printable character must wrap first.
+		[[nodiscard]] bool pending_wrap() const noexcept { return _cursor.pending_wrap; }
 
-    /// Whether `row` was terminated by a wrap rather than a newline. Used when
-    /// copying a selection so re-wrapped paragraphs paste as one line.
-    [[nodiscard]] bool isLineWrapped(int row) const;
-    void setLineWrapped(int row, bool wrapped);
+		/// Whether `row` was terminated by a wrap rather than a newline. Used when
+		/// copying a selection so re-wrapped paragraphs paste as one line.
+		[[nodiscard]] bool is_line_wrapped( int row ) const;
+		void               set_line_wrapped( int row, bool wrapped );
 
-    /// Marks every line as needing a repaint; used after a full reset.
-    void markAllDirty() { m_revision++; }
-    [[nodiscard]] quint64 revision() const noexcept { return m_revision; }
+		/// Marks every line as needing a repaint; used after a full reset.
+		void                        mark_all_dirty() { _revision++; }
+		[[nodiscard]] std::uint64_t revision() const noexcept { return _revision; }
 
-private:
-    [[nodiscard]] Line makeLine(const Attributes &fill) const;
-    void clampCursor();
+	private:
+		[[nodiscard]] Line make_line( Attributes const& fill ) const;
+		void               clamp_cursor();
 
-    int m_columns;
-    int m_rows;
-    int m_scrollbackLimit;
+		int _columns;
+		int _rows;
+		int _scrollback_limit;
 
-    std::vector<Line> m_lines;
-    std::deque<Line> m_scrollback;
-    std::vector<bool> m_wrapped;
-    std::vector<bool> m_tabStops;
+		std::vector<Line> _lines;
+		std::deque<Line>  _scrollback;
+		std::vector<bool> _wrapped;
+		std::vector<bool> _tab_stops;
 
-    CursorState m_cursor;
-    int m_scrollTop{0};
-    int m_scrollBottom{0};
-    quint64 m_revision{0};
-};
+		CursorState   _cursor;
+		int           _scroll_top{ 0 };
+		int           _scroll_bottom{ 0 };
+		std::uint64_t _revision{ 0 };
+	};
 
 } // namespace arterm::term
