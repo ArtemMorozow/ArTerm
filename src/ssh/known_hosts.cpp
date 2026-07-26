@@ -1,10 +1,10 @@
 #include "ssh/known_hosts.hpp"
 
-#include <QByteArray>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
-#include <QObject>
+#include "core/base64.hpp"
+#include "core/paths.hpp"
+
+#include <filesystem>
+#include <format>
 
 #include <libssh2.h>
 
@@ -33,69 +33,76 @@ namespace arterm::ssh
 			}
 		}
 
+		struct HostsGuard
+		{
+			LIBSSH2_KNOWNHOSTS* hosts;
+			~HostsGuard() { libssh2_knownhost_free( hosts ); }
+		};
+
 	} // namespace
 
 	KnownHosts::KnownHosts()
-		: _file_path( QDir::homePath() + QLatin1String( "/.ssh/known_hosts" ) )
+		: _file_path( home_directory() + "/.ssh/known_hosts" )
 	{}
 
-	KnownHosts::KnownHosts( QString file_path )
+	KnownHosts::KnownHosts( std::string file_path )
 		: _file_path( std::move( file_path ) )
 	{}
 
-	QByteArray KnownHosts::known_hosts_host( QString const& hostname, quint16 port ){
+	std::string KnownHosts::known_hosts_host( std::string const& hostname, std::uint16_t port ){
 		if( port == 22 )
-			return hostname.toUtf8();
-		return QStringLiteral( "[%1]:%2" ).arg( hostname ).arg( port ).toUtf8();
+			return hostname;
+		return std::format( "[{}]:{}", hostname, port );
 	}
 
-	QString KnownHosts::key_type_name( int libssh2_host_key_type ){
+	std::string KnownHosts::key_type_name( int libssh2_host_key_type ){
 		switch( libssh2_host_key_type ){
 			case LIBSSH2_HOSTKEY_TYPE_RSA:
-				return QStringLiteral( "ssh-rsa" );
+				return "ssh-rsa";
 			case LIBSSH2_HOSTKEY_TYPE_DSS:
-				return QStringLiteral( "ssh-dss" );
+				return "ssh-dss";
 			case LIBSSH2_HOSTKEY_TYPE_ECDSA_256:
-				return QStringLiteral( "ecdsa-sha2-nistp256" );
+				return "ecdsa-sha2-nistp256";
 			case LIBSSH2_HOSTKEY_TYPE_ECDSA_384:
-				return QStringLiteral( "ecdsa-sha2-nistp384" );
+				return "ecdsa-sha2-nistp384";
 			case LIBSSH2_HOSTKEY_TYPE_ECDSA_521:
-				return QStringLiteral( "ecdsa-sha2-nistp521" );
+				return "ecdsa-sha2-nistp521";
 			case LIBSSH2_HOSTKEY_TYPE_ED25519:
-				return QStringLiteral( "ssh-ed25519" );
+				return "ssh-ed25519";
 			default:
-				return QObject::tr( "unknown" );
+				return "unknown";
 		}
 	}
 
-	QString KnownHosts::sha256_fingerprint( LIBSSH2_SESSION* session ){
+	std::string KnownHosts::sha256_fingerprint( LIBSSH2_SESSION* session ){
 		char const* hash = libssh2_hostkey_hash( session, LIBSSH2_HOSTKEY_HASH_SHA256 );
 		if( hash == nullptr )
 			return {};
 
-		QByteArray const digest( hash, 32 );
 		// OpenSSH prints unpadded base64.
-		QByteArray encoded = digest.toBase64();
-		while( encoded.endsWith( '=' ) )
-			encoded.chop( 1 );
+		std::string encoded = base64_encode( std::string_view( hash, 32 ) );
+		while( !encoded.empty() && encoded.back() == '=' )
+			encoded.pop_back();
 
-		return QLatin1String( "SHA256:" ) + QString::fromLatin1( encoded );
+		return "SHA256:" + encoded;
 	}
 
-	QString KnownHosts::md5_fingerprint( LIBSSH2_SESSION* session ){
+	std::string KnownHosts::md5_fingerprint( LIBSSH2_SESSION* session ){
 		char const* hash = libssh2_hostkey_hash( session, LIBSSH2_HOSTKEY_HASH_MD5 );
 		if( hash == nullptr )
 			return {};
 
-		QStringList parts;
-		parts.reserve( 16 );
+		std::string result = "MD5:";
 		for( int i = 0; i < 16; ++i ){
-			parts << QStringLiteral( "%1" ).arg( static_cast<unsigned char>( hash[i] ), 2, 16, QLatin1Char( '0' ) );
+			if( i != 0 )
+				result += ':';
+			result += std::format( "{:02x}", static_cast<unsigned char>( hash[i] ) );
 		}
-		return QLatin1String( "MD5:" ) + parts.join( QLatin1Char( ':' ) );
+		return result;
 	}
 
-	Result<HostKeyInfo> KnownHosts::check( LIBSSH2_SESSION* session, QString const& hostname, quint16 port ) const{
+	Result<HostKeyInfo> KnownHosts::check( LIBSSH2_SESSION* session, std::string const& hostname,
+										   std::uint16_t port ) const{
 		HostKeyInfo info;
 		info.hostname = hostname;
 		info.port     = port;
@@ -103,11 +110,10 @@ namespace arterm::ssh
 		size_t      key_length = 0;
 		int         key_type   = 0;
 		char const* key        = libssh2_session_hostkey( session, &key_length, &key_type );
-		if( key == nullptr ){
-			return fail( ErrorKind::HOST_KEY, QObject::tr( "The server did not present a host key" ) );
-		}
+		if( key == nullptr )
+			return fail( ErrorKind::HOST_KEY, "The server did not present a host key" );
 
-		info.raw_key      = QByteArray( key, static_cast<qsizetype>( key_length ) );
+		info.raw_key      = std::string( key, key_length );
 		info.raw_key_type = key_type;
 		info.key_type     = key_type_name( key_type );
 		info.sha256       = sha256_fingerprint( session );
@@ -119,24 +125,17 @@ namespace arterm::ssh
 			return info;
 		}
 
-		struct HostsGuard
-		{
-			LIBSSH2_KNOWNHOSTS* hosts;
-			~HostsGuard() { libssh2_knownhost_free( hosts ); }
-		} guard{ hosts };
+		HostsGuard const guard{ hosts };
 
-		QByteArray const file_path = _file_path.toUtf8();
-		int const        read_count =
-			libssh2_knownhost_readfile( hosts, file_path.constData(), LIBSSH2_KNOWNHOST_FILE_OPENSSH );
-		if( read_count < 0 && QFile::exists( _file_path ) ){
+		int const read_count = libssh2_knownhost_readfile( hosts, _file_path.c_str(), LIBSSH2_KNOWNHOST_FILE_OPENSSH );
+		if( read_count < 0 && std::filesystem::exists( _file_path ) ){
 			// The file exists but libssh2 refused to parse it.
 			info.verdict = HostKeyVerdict::UNUSABLE;
 			return info;
 		}
 
-		QByteArray const   host  = hostname.toUtf8();
 		libssh2_knownhost* match = nullptr;
-		int const          rc    = libssh2_knownhost_checkp( hosts, host.constData(), port, key, key_length,
+		int const          rc    = libssh2_knownhost_checkp( hosts, hostname.c_str(), port, key, key_length,
 															 LIBSSH2_KNOWNHOST_TYPE_PLAIN | LIBSSH2_KNOWNHOST_KEYENC_RAW, &match );
 
 		switch( rc ){
@@ -160,25 +159,20 @@ namespace arterm::ssh
 	Status KnownHosts::store( LIBSSH2_SESSION* session, HostKeyInfo const& info ) const{
 		LIBSSH2_KNOWNHOSTS* hosts = libssh2_knownhost_init( session );
 		if( hosts == nullptr )
-			return fail( ErrorKind::HOST_KEY, QObject::tr( "Cannot open the known_hosts database" ) );
+			return fail( ErrorKind::HOST_KEY, "Cannot open the known_hosts database" );
 
-		struct HostsGuard
-		{
-			LIBSSH2_KNOWNHOSTS* hosts;
-			~HostsGuard() { libssh2_knownhost_free( hosts ); }
-		} guard{ hosts };
+		HostsGuard const guard{ hosts };
 
-		QByteArray const file_path = _file_path.toUtf8();
-		libssh2_knownhost_readfile( hosts, file_path.constData(), LIBSSH2_KNOWNHOST_FILE_OPENSSH );
+		libssh2_knownhost_readfile( hosts, _file_path.c_str(), LIBSSH2_KNOWNHOST_FILE_OPENSSH );
 
-		QByteArray const host = known_hosts_host( info.hostname, info.port );
+		std::string const host = known_hosts_host( info.hostname, info.port );
 
 		// On a rotation the stale entry must go first, otherwise the file keeps two
 		// conflicting keys and every later check reports a mismatch.
 		if( info.verdict == HostKeyVerdict::MISMATCH ){
 			libssh2_knownhost* stale = nullptr;
-			while( libssh2_knownhost_checkp( hosts, info.hostname.toUtf8().constData(), info.port,
-											 info.raw_key.constData(), static_cast<size_t>( info.raw_key.size() ),
+			while( libssh2_knownhost_checkp( hosts, info.hostname.c_str(), info.port, info.raw_key.data(),
+											 info.raw_key.size(),
 											 LIBSSH2_KNOWNHOST_TYPE_PLAIN | LIBSSH2_KNOWNHOST_KEYENC_RAW,
 											 &stale ) == LIBSSH2_KNOWNHOST_CHECK_MISMATCH &&
 				   stale != nullptr ){
@@ -191,41 +185,38 @@ namespace arterm::ssh
 		int const type_mask =
 			LIBSSH2_KNOWNHOST_TYPE_PLAIN | LIBSSH2_KNOWNHOST_KEYENC_RAW | known_host_key_bit( info.raw_key_type );
 
-		int const rc = libssh2_knownhost_addc( hosts, host.constData(), nullptr, info.raw_key.constData(),
-											   static_cast<size_t>( info.raw_key.size() ), "added by ArTerm", 15,
-											   type_mask, nullptr );
+		int const rc = libssh2_knownhost_addc( hosts, host.c_str(), nullptr, info.raw_key.data(), info.raw_key.size(),
+											   "added by ArTerm", 15, type_mask, nullptr );
 		if( rc != 0 )
-			return fail( ErrorKind::HOST_KEY, QObject::tr( "Cannot add the host key" ), rc );
+			return fail( ErrorKind::HOST_KEY, "Cannot add the host key", rc );
 
 		// Make sure ~/.ssh exists with the permissions OpenSSH insists on.
-		QFileInfo const file_info( _file_path );
-		QDir().mkpath( file_info.absolutePath() );
-		QFile::setPermissions( file_info.absolutePath(), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner );
+		namespace fs = std::filesystem;
 
-		int const written = libssh2_knownhost_writefile( hosts, file_path.constData(), LIBSSH2_KNOWNHOST_FILE_OPENSSH );
+		fs::path const  file( _file_path );
+		std::error_code ignored;
+		fs::create_directories( file.parent_path(), ignored );
+		fs::permissions( file.parent_path(), fs::perms::owner_all, fs::perm_options::replace, ignored );
+
+		int const written = libssh2_knownhost_writefile( hosts, _file_path.c_str(), LIBSSH2_KNOWNHOST_FILE_OPENSSH );
 		if( written != 0 )
-			return fail( ErrorKind::HOST_KEY, QObject::tr( "Cannot write %1" ).arg( _file_path ), written );
+			return fail( ErrorKind::HOST_KEY, std::format( "Cannot write {}", _file_path ), written );
 
-		QFile::setPermissions( _file_path, QFile::ReadOwner | QFile::WriteOwner );
+		fs::permissions( file, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ignored );
 		return {};
 	}
 
-	Status KnownHosts::remove( LIBSSH2_SESSION* session, QString const& hostname, quint16 port ) const{
+	Status KnownHosts::remove( LIBSSH2_SESSION* session, std::string const& hostname, std::uint16_t port ) const{
 		LIBSSH2_KNOWNHOSTS* hosts = libssh2_knownhost_init( session );
 		if( hosts == nullptr )
-			return fail( ErrorKind::HOST_KEY, QObject::tr( "Cannot open the known_hosts database" ) );
+			return fail( ErrorKind::HOST_KEY, "Cannot open the known_hosts database" );
 
-		struct HostsGuard
-		{
-			LIBSSH2_KNOWNHOSTS* hosts;
-			~HostsGuard() { libssh2_knownhost_free( hosts ); }
-		} guard{ hosts };
+		HostsGuard const guard{ hosts };
 
-		QByteArray const file_path = _file_path.toUtf8();
-		if( libssh2_knownhost_readfile( hosts, file_path.constData(), LIBSSH2_KNOWNHOST_FILE_OPENSSH ) < 0 )
-			return fail( ErrorKind::HOST_KEY, QObject::tr( "Cannot read %1" ).arg( _file_path ) );
+		if( libssh2_knownhost_readfile( hosts, _file_path.c_str(), LIBSSH2_KNOWNHOST_FILE_OPENSSH ) < 0 )
+			return fail( ErrorKind::HOST_KEY, std::format( "Cannot read {}", _file_path ) );
 
-		QByteArray const wanted = known_hosts_host( hostname, port );
+		std::string const wanted = known_hosts_host( hostname, port );
 
 		libssh2_knownhost* entry       = nullptr;
 		libssh2_knownhost* previous    = nullptr;
@@ -247,9 +238,9 @@ namespace arterm::ssh
 		if( !removed_any )
 			return {};
 
-		int const written = libssh2_knownhost_writefile( hosts, file_path.constData(), LIBSSH2_KNOWNHOST_FILE_OPENSSH );
+		int const written = libssh2_knownhost_writefile( hosts, _file_path.c_str(), LIBSSH2_KNOWNHOST_FILE_OPENSSH );
 		if( written != 0 )
-			return fail( ErrorKind::HOST_KEY, QObject::tr( "Cannot write %1" ).arg( _file_path ), written );
+			return fail( ErrorKind::HOST_KEY, std::format( "Cannot write {}", _file_path ), written );
 
 		return {};
 	}

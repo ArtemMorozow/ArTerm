@@ -1,10 +1,8 @@
 #include "ssh/ssh_library.hpp"
 
-#include <QLoggingCategory>
+#include "core/log.hpp"
 
 #include <libssh2.h>
-
-Q_DECLARE_LOGGING_CATEGORY( lc_ssh )
 
 namespace arterm::ssh
 {
@@ -19,9 +17,9 @@ namespace arterm::ssh
 			int const rc = libssh2_init( 0 );
 			_initialised = ( rc == 0 );
 			if( !_initialised )
-				qCCritical( lc_ssh ) << "libssh2_init failed with code" << rc;
+				log_error( "ssh", "libssh2_init failed with code {}", rc );
 			else
-				qCDebug( lc_ssh ) << "libssh2" << LIBSSH2_VERSION << "initialised";
+				log_debug( "ssh", "libssh2 {} initialised", LIBSSH2_VERSION );
 		} );
 	}
 

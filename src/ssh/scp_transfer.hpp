@@ -1,11 +1,10 @@
 #pragma once
 
 #include "core/result.hpp"
-#include "ssh/ssh_types.hpp"
 
-#include <QString>
-
+#include <cstdint>
 #include <functional>
+#include <string>
 
 using LIBSSH2_SESSION = struct _LIBSSH2_SESSION;
 
@@ -22,15 +21,15 @@ namespace arterm::ssh
 	{
 
 		/// Reports bytes moved so far and total size. Returning false cancels.
-		using ProgressCallback = std::function<bool( quint64 transferred, quint64 total )>;
+		using ProgressCallback = std::function<bool( std::uint64_t transferred, std::uint64_t total )>;
 
 		/// Copy a remote file to a local path. The session must be in blocking mode.
-		[[nodiscard]] Status receive_file( LIBSSH2_SESSION* session, QString const& remote_path,
-										   QString const& local_path, ProgressCallback const& on_progress );
+		[[nodiscard]] Status receive_file( LIBSSH2_SESSION* session, std::string const& remote_path,
+										   std::string const& local_path, ProgressCallback const& on_progress );
 
 		/// Copy a local file to a remote path, preserving the local mode bits.
-		[[nodiscard]] Status send_file( LIBSSH2_SESSION* session, QString const& local_path, QString const& remote_path,
-										ProgressCallback const& on_progress );
+		[[nodiscard]] Status send_file( LIBSSH2_SESSION* session, std::string const& local_path,
+										std::string const& remote_path, ProgressCallback const& on_progress );
 
 	} // namespace scp
 } // namespace arterm::ssh

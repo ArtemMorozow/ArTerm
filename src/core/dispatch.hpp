@@ -21,6 +21,11 @@ namespace arterm
 	/// add a hop.
 	[[nodiscard]] bool is_main_queue() noexcept;
 
+	/// Runs `work` on the main queue and blocks until it has finished - the
+	/// pattern for a worker that needs a human answer before it can continue.
+	/// Runs inline when already on the main queue, so it cannot self-deadlock.
+	void on_main_sync( Work work );
+
 	/// A serial queue owning one unit of work - an SSH session, a transfer.
 	///
 	/// Serial means the work it guards needs no further locking: libssh2 sessions

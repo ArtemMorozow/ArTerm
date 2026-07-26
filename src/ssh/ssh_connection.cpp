@@ -1,17 +1,17 @@
 #include "ssh/ssh_connection.hpp"
 
+#include "core/log.hpp"
+#include "core/paths.hpp"
 #include "ssh/known_hosts.hpp"
 #include "ssh/ssh_library.hpp"
-
-#include <QDir>
-#include <QFileInfo>
-#include <QLoggingCategory>
 
 #include <libssh2.h>
 
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <format>
 
 #include <fcntl.h>
 #include <netdb.h>
@@ -20,8 +20,6 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
-
-Q_LOGGING_CATEGORY( lc_ssh, "arterm.ssh" )
 
 namespace arterm::ssh
 {
@@ -57,12 +55,6 @@ namespace arterm::ssh
 			}
 		}
 
-		QString expand_path( QString const& path ){
-			if( path.startsWith( QLatin1String( "~/" ) ) )
-				return QDir::homePath() + path.mid( 1 );
-			return path;
-		}
-
 	} // namespace
 
 	SshConnection::SshConnection( HostProfile profile )
@@ -92,10 +84,10 @@ namespace arterm::ssh
 		}
 
 		if( char const* banner = libssh2_session_banner_get( _session ) )
-			_banner = QString::fromUtf8( banner );
+			_banner = banner;
 
-		qCInfo( lc_ssh ) << "connected to" << _profile.endpoint() << "as" << _profile.username << "using"
-						 << auth_method_name( _used_auth );
+		log_info( "ssh", "connected to {} as {} using {}", _profile.endpoint(), _profile.username,
+				  auth_method_name( _used_auth ) );
 		return {};
 	}
 
@@ -105,17 +97,16 @@ namespace arterm::ssh
 		hints.ai_socktype = SOCK_STREAM;
 		hints.ai_protocol = IPPROTO_TCP;
 
-		QByteArray const host = _profile.hostname.toUtf8();
-		QByteArray const port = QByteArray::number( _profile.port );
+		std::string const port = std::to_string( _profile.port );
 
 		addrinfo* resolved = nullptr;
-		int const rc       = ::getaddrinfo( host.constData(), port.constData(), &hints, &resolved );
+		int const rc       = ::getaddrinfo( _profile.hostname.c_str(), port.c_str(), &hints, &resolved );
 		if( rc != 0 || resolved == nullptr ){
-			return fail( ErrorKind::NETWORK, QObject::tr( "Cannot resolve %1: %2" )
-												 .arg( _profile.hostname, QString::fromUtf8( ::gai_strerror( rc ) ) ) );
+			return fail( ErrorKind::NETWORK,
+						 std::format( "Cannot resolve {}: {}", _profile.hostname, ::gai_strerror( rc ) ) );
 		}
 
-		Error last_failure{ ErrorKind::NETWORK, QObject::tr( "No usable address for %1" ).arg( _profile.hostname ) };
+		Error last_failure{ ErrorKind::NETWORK, std::format( "No usable address for {}", _profile.hostname ) };
 
 		for( addrinfo* candidate = resolved; candidate != nullptr; candidate = candidate->ai_next ){
 			int const sock = ::socket( candidate->ai_family, candidate->ai_socktype, candidate->ai_protocol );
@@ -141,20 +132,18 @@ namespace arterm::ssh
 					}
 					else{
 						last_failure =
-							Error{ ErrorKind::NETWORK,
-								   QObject::tr( "Cannot connect to %1: %2" )
-									   .arg( _profile.endpoint(), QString::fromUtf8( ::strerror( so_error ) ) ) };
+							Error{ ErrorKind::NETWORK, std::format( "Cannot connect to {}: {}", _profile.endpoint(),
+																	::strerror( so_error ) ) };
 					}
 				}
 				else{
-					last_failure = Error{ ErrorKind::NETWORK,
-										  QObject::tr( "Connection to %1 timed out" ).arg( _profile.endpoint() ) };
+					last_failure =
+						Error{ ErrorKind::NETWORK, std::format( "Connection to {} timed out", _profile.endpoint() ) };
 				}
 			}
 			else{
-				last_failure = Error{ ErrorKind::NETWORK,
-									  QObject::tr( "Cannot connect to %1: %2" )
-										  .arg( _profile.endpoint(), QString::fromUtf8( ::strerror( errno ) ) ) };
+				last_failure = Error{ ErrorKind::NETWORK, std::format( "Cannot connect to {}: {}", _profile.endpoint(),
+																	   ::strerror( errno ) ) };
 			}
 
 			if( !connected ){
@@ -182,7 +171,7 @@ namespace arterm::ssh
 	Status SshConnection::handshake(){
 		_session = libssh2_session_init();
 		if( _session == nullptr )
-			return fail( ErrorKind::HANDSHAKE, QObject::tr( "Cannot allocate an SSH session" ) );
+			return fail( ErrorKind::HANDSHAKE, "Cannot allocate an SSH session" );
 
 		libssh2_session_set_blocking( _session, 1 );
 		libssh2_session_set_timeout( _session, HANDSHAKE_TIMEOUT_MS );
@@ -192,7 +181,7 @@ namespace arterm::ssh
 			libssh2_session_flag( _session, LIBSSH2_FLAG_COMPRESS, 1 );
 
 		if( libssh2_session_handshake( _session, _socket ) != 0 )
-			return std::unexpected( last_error( ErrorKind::HANDSHAKE, QObject::tr( "SSH handshake failed" ) ) );
+			return std::unexpected( last_error( ErrorKind::HANDSHAKE, "SSH handshake failed" ) );
 
 		if( _profile.keep_alive_seconds > 0 )
 			libssh2_keepalive_config( _session, 1, static_cast<unsigned>( _profile.keep_alive_seconds ) );
@@ -215,13 +204,13 @@ namespace arterm::ssh
 
 			case HostKeyVerdict::UNUSABLE:
 				if( !_profile.strict_host_key_checking ){
-					qCWarning( lc_ssh ) << "known_hosts unreadable, continuing without verification";
+					log_warning( "ssh", "known_hosts unreadable, continuing without verification" );
 					return {};
 				}
 				return fail( ErrorKind::HOST_KEY,
-							 QObject::tr( "The known_hosts file could not be read, so the identity of %1 "
-										  "cannot be verified." )
-								 .arg( _profile.hostname ) );
+							 std::format( "The known_hosts file could not be read, so the identity of {} "
+										  "cannot be verified.",
+										  _profile.hostname ) );
 
 			case HostKeyVerdict::UNKNOWN:
 			case HostKeyVerdict::MISMATCH:
@@ -231,49 +220,47 @@ namespace arterm::ssh
 		if( !_host_key_prompt ){
 			return fail( ErrorKind::HOST_KEY,
 						 info->verdict == HostKeyVerdict::MISMATCH
-							 ? QObject::tr( "The host key for %1 has changed." ).arg( _profile.hostname )
-							 : QObject::tr( "The host key for %1 is not known." ).arg( _profile.hostname ) );
+							 ? std::format( "The host key for {} has changed.", _profile.hostname )
+							 : std::format( "The host key for {} is not known.", _profile.hostname ) );
 		}
 
 		if( !_host_key_prompt( *info ) )
-			return std::unexpected( Error{ ErrorKind::HOST_KEY, QObject::tr( "Host key rejected" ) } );
+			return std::unexpected( Error{ ErrorKind::HOST_KEY, "Host key rejected" } );
 
 		if( auto stored = known_hosts.store( _session, *info ); !stored )
-			qCWarning( lc_ssh ) << "cannot persist host key:" << stored.error().message;
+			log_warning( "ssh", "cannot persist host key: {}", stored.error().message );
 
 		return {};
 	}
 
 	Status SshConnection::authenticate(){
-		QByteArray const user = _profile.username.toUtf8();
-
-		char const* methods =
-			libssh2_userauth_list( _session, user.constData(), static_cast<unsigned int>( user.size() ) );
+		char const* methods = libssh2_userauth_list( _session, _profile.username.c_str(),
+													 static_cast<unsigned int>( _profile.username.size() ) );
 		if( methods == nullptr && libssh2_userauth_authenticated( _session ) ){
 			// Some servers accept "none" authentication outright.
 			_used_auth = AuthMethod::PASSWORD;
 			return {};
 		}
 
-		QString const available = QString::fromUtf8( methods == nullptr ? "" : methods );
-		qCDebug( lc_ssh ) << "server offers" << available;
+		std::string const available = methods == nullptr ? "" : methods;
+		log_debug( "ssh", "server offers {}", available );
 
 		Error last_failure{ ErrorKind::AUTHENTICATION,
-							QObject::tr( "No authentication method succeeded for %1" ).arg( _profile.username ) };
+							std::format( "No authentication method succeeded for {}", _profile.username ) };
 
 		for( AuthMethod const method : _profile.auth_order() ){
 			// Skip methods the server did not advertise, unless it advertised none
 			// at all (in which case we simply try everything we have).
-			if( !available.isEmpty() ){
+			if( !available.empty() ){
 				bool const offered = [&]{
 					switch( method ){
 						case AuthMethod::AGENT:
 						case AuthMethod::PUBLIC_KEY:
-							return available.contains( QLatin1String( "publickey" ) );
+							return available.contains( "publickey" );
 						case AuthMethod::PASSWORD:
-							return available.contains( QLatin1String( "password" ) );
+							return available.contains( "password" );
 						case AuthMethod::KEYBOARD_INTERACTIVE:
-							return available.contains( QLatin1String( "keyboard-interactive" ) );
+							return available.contains( "keyboard-interactive" );
 					}
 					return false;
 				}();
@@ -305,7 +292,7 @@ namespace arterm::ssh
 			if( result.error().is_cancellation() )
 				return result;
 
-			qCDebug( lc_ssh ) << auth_method_name( method ) << "failed:" << result.error().message;
+			log_debug( "ssh", "{} failed: {}", auth_method_name( method ), result.error().message );
 			last_failure = result.error();
 		}
 
@@ -315,7 +302,7 @@ namespace arterm::ssh
 	Status SshConnection::auth_agent(){
 		LIBSSH2_AGENT* agent = libssh2_agent_init( _session );
 		if( agent == nullptr )
-			return fail( ErrorKind::AUTHENTICATION, QObject::tr( "Cannot initialise the SSH agent" ) );
+			return fail( ErrorKind::AUTHENTICATION, "Cannot initialise the SSH agent" );
 
 		struct AgentGuard
 		{
@@ -326,14 +313,11 @@ namespace arterm::ssh
 			}
 		} guard{ agent };
 
-		if( libssh2_agent_connect( agent ) != 0 ){
-			return fail( ErrorKind::AUTHENTICATION,
-						 QObject::tr( "No SSH agent is running (SSH_AUTH_SOCK is unset or stale)" ) );
-		}
+		if( libssh2_agent_connect( agent ) != 0 )
+			return fail( ErrorKind::AUTHENTICATION, "No SSH agent is running (SSH_AUTH_SOCK is unset or stale)" );
 		if( libssh2_agent_list_identities( agent ) != 0 )
-			return fail( ErrorKind::AUTHENTICATION, QObject::tr( "The SSH agent has no identities" ) );
+			return fail( ErrorKind::AUTHENTICATION, "The SSH agent has no identities" );
 
-		QByteArray const         user     = _profile.username.toUtf8();
 		libssh2_agent_publickey* identity = nullptr;
 		libssh2_agent_publickey* previous = nullptr;
 
@@ -342,40 +326,34 @@ namespace arterm::ssh
 			if( rc == 1 ) // No more identities.
 				break;
 			if( rc < 0 )
-				return fail( ErrorKind::AUTHENTICATION, QObject::tr( "Cannot read agent identities" ) );
+				return fail( ErrorKind::AUTHENTICATION, "Cannot read agent identities" );
 
-			if( libssh2_agent_userauth( agent, user.constData(), identity ) == 0 )
+			if( libssh2_agent_userauth( agent, _profile.username.c_str(), identity ) == 0 )
 				return {};
 
 			previous = identity;
 		}
 
 		return fail( ErrorKind::AUTHENTICATION,
-					 QObject::tr( "The SSH agent holds no key accepted by %1" ).arg( _profile.hostname ) );
+					 std::format( "The SSH agent holds no key accepted by {}", _profile.hostname ) );
 	}
 
 	Status SshConnection::auth_public_key(){
-		if( _profile.private_key_path.isEmpty() )
-			return fail( ErrorKind::AUTHENTICATION, QObject::tr( "No private key configured" ) );
+		if( _profile.private_key_path.empty() )
+			return fail( ErrorKind::AUTHENTICATION, "No private key configured" );
 
-		QString const private_path = expand_path( _profile.private_key_path );
-		if( !QFileInfo::exists( private_path ) ){
-			return fail( ErrorKind::AUTHENTICATION,
-						 QObject::tr( "Private key %1 does not exist" ).arg( private_path ) );
-		}
+		std::string const private_path = expand_home( _profile.private_key_path );
+		if( !std::filesystem::exists( private_path ) )
+			return fail( ErrorKind::AUTHENTICATION, std::format( "Private key {} does not exist", private_path ) );
 
-		QString const    public_path  = private_path + QLatin1String( ".pub" );
-		QByteArray const private_utf8 = private_path.toUtf8();
-		QByteArray const public_utf8  = public_path.toUtf8();
-		QByteArray const user         = _profile.username.toUtf8();
-
-		bool const have_public = QFileInfo::exists( public_path );
+		std::string const public_path = private_path + ".pub";
+		bool const        have_public = std::filesystem::exists( public_path );
 
 		// First try without a passphrase - unencrypted keys are the common case and
 		// this avoids prompting for nothing.
 		int rc = libssh2_userauth_publickey_fromfile_ex(
-			_session, user.constData(), static_cast<unsigned int>( user.size() ),
-			have_public ? public_utf8.constData() : nullptr, private_utf8.constData(), "" );
+			_session, _profile.username.c_str(), static_cast<unsigned int>( _profile.username.size() ),
+			have_public ? public_path.c_str() : nullptr, private_path.c_str(), "" );
 		if( rc == 0 )
 			return {};
 
@@ -384,17 +362,15 @@ namespace arterm::ssh
 			if( !passphrase )
 				return cancelled();
 
-			QByteArray const secret = passphrase->toUtf8();
-			rc                      = libssh2_userauth_publickey_fromfile_ex(
-                _session, user.constData(), static_cast<unsigned int>( user.size() ),
-                have_public ? public_utf8.constData() : nullptr, private_utf8.constData(), secret.constData() );
+			rc = libssh2_userauth_publickey_fromfile_ex(
+				_session, _profile.username.c_str(), static_cast<unsigned int>( _profile.username.size() ),
+				have_public ? public_path.c_str() : nullptr, private_path.c_str(), passphrase->c_str() );
 			if( rc == 0 )
 				return {};
 		}
 
-		return std::unexpected(
-			last_error( ErrorKind::AUTHENTICATION,
-						QObject::tr( "Public key authentication with %1 failed" ).arg( private_path ) ) );
+		return std::unexpected( last_error( ErrorKind::AUTHENTICATION,
+											std::format( "Public key authentication with {} failed", private_path ) ) );
 	}
 
 	Status SshConnection::auth_password(){
@@ -402,16 +378,13 @@ namespace arterm::ssh
 		if( !password )
 			return cancelled();
 
-		QByteArray const user   = _profile.username.toUtf8();
-		QByteArray const secret = password->toUtf8();
-
-		int const rc =
-			libssh2_userauth_password_ex( _session, user.constData(), static_cast<unsigned int>( user.size() ),
-										  secret.constData(), static_cast<unsigned int>( secret.size() ), nullptr );
+		int const rc = libssh2_userauth_password_ex(
+			_session, _profile.username.c_str(), static_cast<unsigned int>( _profile.username.size() ),
+			password->c_str(), static_cast<unsigned int>( password->size() ), nullptr );
 		if( rc == 0 )
 			return {};
 
-		return std::unexpected( last_error( ErrorKind::AUTHENTICATION, QObject::tr( "Password rejected" ) ) );
+		return std::unexpected( last_error( ErrorKind::AUTHENTICATION, "Password rejected" ) );
 	}
 
 	Status SshConnection::auth_keyboard_interactive(){
@@ -419,12 +392,12 @@ namespace arterm::ssh
 		if( !password )
 			return cancelled();
 
-		_kbd_response                         = password->toStdString();
+		_kbd_response                         = *password;
 		*libssh2_session_abstract( _session ) = &_kbd_response;
 
-		QByteArray const user = _profile.username.toUtf8();
-		int const        rc   = libssh2_userauth_keyboard_interactive_ex(
-            _session, user.constData(), static_cast<unsigned int>( user.size() ), &kbd_interactive_callback );
+		int const rc = libssh2_userauth_keyboard_interactive_ex( _session, _profile.username.c_str(),
+																 static_cast<unsigned int>( _profile.username.size() ),
+																 &kbd_interactive_callback );
 
 		*libssh2_session_abstract( _session ) = nullptr;
 		_kbd_response.clear();
@@ -432,38 +405,37 @@ namespace arterm::ssh
 		if( rc == 0 )
 			return {};
 
-		return std::unexpected(
-			last_error( ErrorKind::AUTHENTICATION, QObject::tr( "Keyboard interactive authentication failed" ) ) );
+		return std::unexpected( last_error( ErrorKind::AUTHENTICATION, "Keyboard interactive authentication failed" ) );
 	}
 
-	std::optional<QString> SshConnection::resolve_password(){
+	std::optional<std::string> SshConnection::resolve_password(){
 		if( _cached_password )
 			return _cached_password;
-		if( !_profile.password.isEmpty() ){
+		if( !_profile.password.empty() ){
 			_cached_password = _profile.password;
 			return _cached_password;
 		}
 		if( !_credential_prompt )
 			return std::nullopt;
 
-		_cached_password = _credential_prompt(
-			QObject::tr( "Password for %1@%2" ).arg( _profile.username, _profile.hostname ), false );
+		_cached_password =
+			_credential_prompt( std::format( "Password for {}@{}", _profile.username, _profile.hostname ), false );
 		return _cached_password;
 	}
 
-	std::optional<QString> SshConnection::resolve_passphrase(){
+	std::optional<std::string> SshConnection::resolve_passphrase(){
 		if( _cached_passphrase )
 			return _cached_passphrase;
-		if( !_profile.key_passphrase.isEmpty() ){
+		if( !_profile.key_passphrase.empty() ){
 			_cached_passphrase = _profile.key_passphrase;
 			return _cached_passphrase;
 		}
 		if( !_credential_prompt )
 			return std::nullopt;
 
-		_cached_passphrase = _credential_prompt(
-			QObject::tr( "Passphrase for %1" ).arg( QFileInfo( expand_path( _profile.private_key_path ) ).fileName() ),
-			false );
+		std::string const key_name =
+			std::filesystem::path( expand_home( _profile.private_key_path ) ).filename().string();
+		_cached_passphrase = _credential_prompt( std::format( "Passphrase for {}", key_name ), false );
 		return _cached_passphrase;
 	}
 
@@ -489,7 +461,7 @@ namespace arterm::ssh
 		return ::poll( &pfd, 1, timeout_ms ) > 0;
 	}
 
-	Error SshConnection::last_error( ErrorKind kind, QString const& context ) const{
+	Error SshConnection::last_error( ErrorKind kind, std::string const& context ) const{
 		if( _session == nullptr )
 			return Error{ kind, context };
 
@@ -497,11 +469,13 @@ namespace arterm::ssh
 		int       length  = 0;
 		int const code    = libssh2_session_last_error( _session, &message, &length, 0 );
 
-		QString detail = QString::fromUtf8( message == nullptr ? "" : message, length );
-		if( detail.isEmpty() )
-			detail = QObject::tr( "libssh2 error %1" ).arg( code );
+		std::string detail = ( message == nullptr || length <= 0 )
+								 ? std::string{}
+								 : std::string( message, static_cast<std::size_t>( length ) );
+		if( detail.empty() )
+			detail = std::format( "libssh2 error {}", code );
 
-		return Error{ kind, context + QLatin1String( ": " ) + detail, code };
+		return Error{ kind, context + ": " + detail, code };
 	}
 
 	void SshConnection::close(){

@@ -4,41 +4,52 @@
 #include "ssh/session_interaction.hpp"
 #include "ssh/ssh_connection.hpp"
 
-#include <QDateTime>
-#include <QDir>
-#include <QDirIterator>
-#include <QElapsedTimer>
-#include <QFile>
-#include <QFileInfo>
-#include <QLoggingCategory>
-
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <format>
+#include <memory>
+#include <utility>
 
-Q_DECLARE_LOGGING_CATEGORY( lc_ssh )
+#include <sys/stat.h>
 
 namespace arterm::ssh
 {
 	namespace
 	{
 
-		constexpr qint64 CHUNK_SIZE = 64 * 1024;
+		namespace fs = std::filesystem;
+
+		constexpr std::size_t CHUNK_SIZE = 64 * 1024;
 
 		/// Minimum gap between two progress signals, so a fast local transfer does not
-		/// flood the GUI thread's event queue.
-		constexpr qint64 PROGRESS_INTERVAL_MS = 80;
+		/// flood the main queue.
+		constexpr auto PROGRESS_INTERVAL = std::chrono::milliseconds( 80 );
 
-		QString join_remote( QString const& directory, QString const& name ){
-			if( directory.isEmpty() || directory == QLatin1String( "/" ) )
-				return QLatin1Char( '/' ) + name;
-			if( directory.endsWith( QLatin1Char( '/' ) ) )
+		using FilePtr = std::unique_ptr<std::FILE, decltype( &std::fclose )>;
+
+		std::string join_remote( std::string const& directory, std::string const& name ){
+			if( directory.empty() || directory == "/" )
+				return "/" + name;
+			if( directory.ends_with( '/' ) )
 				return directory + name;
-			return directory + QLatin1Char( '/' ) + name;
+			return directory + "/" + name;
 		}
 
-		RemoteFileEntry entry_from_attributes( QString const& directory, QString const& name,
+		/// ASCII-only case folding; matches what the remote side sorts with far more
+		/// often than a full Unicode collation would.
+		bool name_less_ignoring_case( std::string const& a, std::string const& b ){
+			auto const fold = []( char c ) { return std::tolower( static_cast<unsigned char>( c ) ); };
+			return std::ranges::lexicographical_compare( a, b, {}, fold, fold );
+		}
+
+		RemoteFileEntry entry_from_attributes( std::string const& directory, std::string const& name,
 											   LIBSSH2_SFTP_ATTRIBUTES const& attributes ){
 			RemoteFileEntry entry;
 			entry.name = name;
@@ -47,13 +58,13 @@ namespace arterm::ssh
 			if( attributes.flags & LIBSSH2_SFTP_ATTR_SIZE )
 				entry.size = attributes.filesize;
 			if( attributes.flags & LIBSSH2_SFTP_ATTR_UIDGID ){
-				entry.uid = static_cast<quint32>( attributes.uid );
-				entry.gid = static_cast<quint32>( attributes.gid );
+				entry.uid = static_cast<std::uint32_t>( attributes.uid );
+				entry.gid = static_cast<std::uint32_t>( attributes.gid );
 			}
 			if( attributes.flags & LIBSSH2_SFTP_ATTR_ACMODTIME )
-				entry.modified = QDateTime::fromSecsSinceEpoch( static_cast<qint64>( attributes.mtime ) );
+				entry.modified = std::chrono::system_clock::from_time_t( static_cast<time_t>( attributes.mtime ) );
 			if( attributes.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS ){
-				entry.permissions   = static_cast<quint32>( attributes.permissions & 0xFFF );
+				entry.permissions   = static_cast<std::uint32_t>( attributes.permissions & 0xFFF );
 				entry.is_directory  = LIBSSH2_SFTP_S_ISDIR( attributes.permissions );
 				entry.is_symlink    = LIBSSH2_SFTP_S_ISLNK( attributes.permissions );
 				entry.is_executable = ( attributes.permissions & 0111 ) != 0;
@@ -62,61 +73,85 @@ namespace arterm::ssh
 			return entry;
 		}
 
+		struct HandleGuard
+		{
+			LIBSSH2_SFTP_HANDLE* handle;
+			~HandleGuard() { libssh2_sftp_close_handle( handle ); }
+		};
+
 	} // namespace
 
-	SftpSession::SftpSession( HostProfile profile, std::shared_ptr<SessionInteraction> interaction, QObject* parent )
-		: QObject( parent )
-		, _profile( std::move( profile ) )
+	std::shared_ptr<SftpSession> SftpSession::create( HostProfile                         profile,
+													  std::shared_ptr<SessionInteraction> interaction ){
+		return std::shared_ptr<SftpSession>( new SftpSession( std::move( profile ), std::move( interaction ) ) );
+	}
+
+	SftpSession::SftpSession( HostProfile profile, std::shared_ptr<SessionInteraction> interaction )
+		: _profile( std::move( profile ) )
 		, _interaction( std::move( interaction ) )
+		, _queue( "arterm.sftp." + _profile.id )
 	{}
 
 	SftpSession::~SftpSession(){
-		shutdown();
+		_queue.sync( [this] { run_shutdown(); } );
 	}
 
 	void SftpSession::start(){
+		_queue.async( [weak = weak_from_this()]{
+			if( auto self = weak.lock() )
+				self->run_start();
+		} );
+	}
+
+	void SftpSession::run_start(){
 		_connection = std::make_unique<SshConnection>( _profile );
 
 		if( _interaction ){
 			auto interaction = _interaction;
 			_connection->set_host_key_prompt(
 				[interaction]( HostKeyInfo const& info ) { return interaction->confirm_host_key( info ); } );
-			_connection->set_credential_prompt( [interaction]( QString const& prompt, bool echo ){
+			_connection->set_credential_prompt( [interaction]( std::string const& prompt, bool echo ){
 				return interaction->ask_credential( prompt, echo );
 			} );
 		}
 
 		if( auto status = _connection->open(); !status ){
 			_connection.reset();
-			Q_EMIT failed( status.error() );
+			failed( status.error() );
 			return;
 		}
 
-		// SFTP runs blocking: this worker thread exists precisely so long transfers
-		// never touch the GUI thread.
+		// SFTP runs blocking: this queue exists precisely so long transfers never
+		// touch the main queue.
 		_connection->set_blocking( true );
 
 		_sftp = libssh2_sftp_init( _connection->session() );
 		if( _sftp == nullptr ){
-			auto error =
-				_connection->last_error( ErrorKind::SFTP, QObject::tr( "The server refused the SFTP subsystem" ) );
+			auto error = _connection->last_error( ErrorKind::SFTP, "The server refused the SFTP subsystem" );
 			_connection.reset();
-			Q_EMIT failed( error );
+			failed( error );
 			return;
 		}
 
 		// Resolve "." to learn the login directory.
 		char      resolved[1024] = {};
 		int const length         = libssh2_sftp_realpath( _sftp, ".", resolved, sizeof( resolved ) - 1 );
-		_home_directory          = length > 0 ? QString::fromUtf8( resolved, length ) : QStringLiteral( "/" );
+		_home_directory          = length > 0 ? std::string( resolved, static_cast<std::size_t>( length ) ) : "/";
 
-		if( !_profile.startup_directory.isEmpty() )
+		if( !_profile.startup_directory.empty() )
 			_home_directory = _profile.startup_directory;
 
-		Q_EMIT ready( _home_directory );
+		ready( _home_directory );
 	}
 
 	void SftpSession::shutdown(){
+		_queue.async( [weak = weak_from_this()]{
+			if( auto self = weak.lock() )
+				self->run_shutdown();
+		} );
+	}
+
+	void SftpSession::run_shutdown(){
 		if( _sftp != nullptr ){
 			libssh2_sftp_shutdown( _sftp );
 			_sftp = nullptr;
@@ -124,81 +159,76 @@ namespace arterm::ssh
 		_connection.reset();
 	}
 
-	void SftpSession::request_cancel( quint64 request_id ){
+	void SftpSession::request_cancel( std::uint64_t request_id ){
 		std::lock_guard const lock( _cancel_mutex );
 		_cancel_requests.insert( request_id );
 	}
 
-	bool SftpSession::is_cancelled( quint64 request_id ) const{
+	bool SftpSession::is_cancelled( std::uint64_t request_id ) const{
 		std::lock_guard const lock( _cancel_mutex );
 		return _cancel_requests.contains( request_id );
 	}
 
-	void SftpSession::clear_cancel( quint64 request_id ){
+	void SftpSession::clear_cancel( std::uint64_t request_id ){
 		std::lock_guard const lock( _cancel_mutex );
-		_cancel_requests.remove( request_id );
+		_cancel_requests.erase( request_id );
 	}
 
-	Error SftpSession::sftp_error( QString const& context ) const{
+	Error SftpSession::sftp_error( std::string const& context ) const{
 		if( _sftp == nullptr )
 			return Error{ ErrorKind::SFTP, context };
 
 		auto const code = libssh2_sftp_last_error( _sftp );
 
-		QString reason;
+		std::string reason;
 		switch( code ){
 			case LIBSSH2_FX_NO_SUCH_FILE:
 			case LIBSSH2_FX_NO_SUCH_PATH:
-				reason = QObject::tr( "no such file or directory" );
+				reason = "no such file or directory";
 				break;
 			case LIBSSH2_FX_PERMISSION_DENIED:
-				reason = QObject::tr( "permission denied" );
+				reason = "permission denied";
 				break;
 			case LIBSSH2_FX_FILE_ALREADY_EXISTS:
-				reason = QObject::tr( "already exists" );
+				reason = "already exists";
 				break;
 			case LIBSSH2_FX_DIR_NOT_EMPTY:
-				reason = QObject::tr( "directory is not empty" );
+				reason = "directory is not empty";
 				break;
 			case LIBSSH2_FX_QUOTA_EXCEEDED:
-				reason = QObject::tr( "quota exceeded" );
+				reason = "quota exceeded";
 				break;
 			case LIBSSH2_FX_NO_SPACE_ON_FILESYSTEM:
-				reason = QObject::tr( "no space left on the remote filesystem" );
+				reason = "no space left on the remote filesystem";
 				break;
 			case LIBSSH2_FX_OP_UNSUPPORTED:
-				reason = QObject::tr( "operation not supported by the server" );
+				reason = "operation not supported by the server";
 				break;
 			case 0:
 				// The failure came from the transport rather than the SFTP layer.
 				return _connection != nullptr ? _connection->last_error( ErrorKind::SFTP, context )
 											  : Error{ ErrorKind::SFTP, context };
 			default:
-				reason = QObject::tr( "SFTP status %1" ).arg( code );
+				reason = std::format( "SFTP status {}", code );
 				break;
 		}
 
-		return Error{ ErrorKind::SFTP, context + QLatin1String( ": " ) + reason, static_cast<int>( code ) };
+		return Error{ ErrorKind::SFTP, context + ": " + reason, static_cast<int>( code ) };
 	}
 
 	// ---------------------------------------------------------------------------
 	// Browsing
 	// ---------------------------------------------------------------------------
 
-	Result<RemoteListing> SftpSession::read_directory( QString const& path ){
+	Result<RemoteListing> SftpSession::read_directory( std::string const& path ){
 		if( _sftp == nullptr )
-			return fail( ErrorKind::SFTP, QObject::tr( "Not connected" ) );
+			return fail( ErrorKind::SFTP, "Not connected" );
 
-		QByteArray const     utf8   = path.toUtf8();
-		LIBSSH2_SFTP_HANDLE* handle = libssh2_sftp_opendir( _sftp, utf8.constData() );
+		LIBSSH2_SFTP_HANDLE* handle = libssh2_sftp_opendir( _sftp, path.c_str() );
 		if( handle == nullptr )
-			return std::unexpected( sftp_error( QObject::tr( "Cannot open %1" ).arg( path ) ) );
+			return std::unexpected( sftp_error( std::format( "Cannot open {}", path ) ) );
 
-		struct HandleGuard
-		{
-			LIBSSH2_SFTP_HANDLE* handle;
-			~HandleGuard() { libssh2_sftp_closedir( handle ); }
-		} guard{ handle };
+		HandleGuard const guard{ handle };
 
 		RemoteListing           entries;
 		char                    name[1024];
@@ -209,10 +239,10 @@ namespace arterm::ssh
 			if( length == 0 )
 				break;
 			if( length < 0 )
-				return std::unexpected( sftp_error( QObject::tr( "Cannot read %1" ).arg( path ) ) );
+				return std::unexpected( sftp_error( std::format( "Cannot read {}", path ) ) );
 
-			QString const file_name = QString::fromUtf8( name, length );
-			if( file_name == QLatin1String( "." ) || file_name == QLatin1String( ".." ) )
+			std::string const file_name( name, static_cast<std::size_t>( length ) );
+			if( file_name == "." || file_name == ".." )
 				continue;
 
 			RemoteFileEntry entry = entry_from_attributes( path, file_name, attributes );
@@ -221,10 +251,8 @@ namespace arterm::ssh
 			// into symlinked directories.
 			if( entry.is_symlink ){
 				LIBSSH2_SFTP_ATTRIBUTES target{};
-				QByteArray const        target_path = entry.path.toUtf8();
-				if( libssh2_sftp_stat_ex( _sftp, target_path.constData(),
-										  static_cast<unsigned int>( target_path.size() ), LIBSSH2_SFTP_STAT,
-										  &target ) == 0 ){
+				if( libssh2_sftp_stat_ex( _sftp, entry.path.c_str(), static_cast<unsigned int>( entry.path.size() ),
+										  LIBSSH2_SFTP_STAT, &target ) == 0 ){
 					if( target.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS )
 						entry.is_directory = LIBSSH2_SFTP_S_ISDIR( target.permissions );
 					if( target.flags & LIBSSH2_SFTP_ATTR_SIZE )
@@ -232,139 +260,167 @@ namespace arterm::ssh
 				}
 			}
 
-			entries.append( std::move( entry ) );
+			entries.push_back( std::move( entry ) );
 		}
 
 		// Directories first, then case-insensitive by name - the ordering every
 		// file manager uses.
-		std::sort( entries.begin(), entries.end(), []( RemoteFileEntry const& a, RemoteFileEntry const& b ){
+		std::ranges::sort( entries, []( RemoteFileEntry const& a, RemoteFileEntry const& b ){
 			if( a.is_directory != b.is_directory )
 				return a.is_directory;
-			return a.name.compare( b.name, Qt::CaseInsensitive ) < 0;
+			return name_less_ignoring_case( a.name, b.name );
 		} );
 
 		return entries;
 	}
 
-	Result<RemoteFileEntry> SftpSession::stat_entry( QString const& path ){
+	Result<RemoteFileEntry> SftpSession::stat_entry( std::string const& path ){
 		if( _sftp == nullptr )
-			return fail( ErrorKind::SFTP, QObject::tr( "Not connected" ) );
+			return fail( ErrorKind::SFTP, "Not connected" );
 
 		LIBSSH2_SFTP_ATTRIBUTES attributes{};
-		QByteArray const        utf8 = path.toUtf8();
-		if( libssh2_sftp_stat_ex( _sftp, utf8.constData(), static_cast<unsigned int>( utf8.size() ), LIBSSH2_SFTP_STAT,
+		if( libssh2_sftp_stat_ex( _sftp, path.c_str(), static_cast<unsigned int>( path.size() ), LIBSSH2_SFTP_STAT,
 								  &attributes ) != 0 ){
-			return std::unexpected( sftp_error( QObject::tr( "Cannot stat %1" ).arg( path ) ) );
+			return std::unexpected( sftp_error( std::format( "Cannot stat {}", path ) ) );
 		}
 
-		int const     slash     = path.lastIndexOf( QLatin1Char( '/' ) );
-		QString const directory = slash > 0 ? path.left( slash ) : QStringLiteral( "/" );
-		QString const name      = slash >= 0 ? path.mid( slash + 1 ) : path;
+		auto const        slash     = path.rfind( '/' );
+		std::string const directory = ( slash != std::string::npos && slash > 0 ) ? path.substr( 0, slash ) : "/";
+		std::string const name      = slash != std::string::npos ? path.substr( slash + 1 ) : path;
 
 		return entry_from_attributes( directory, name, attributes );
 	}
 
-	void SftpSession::list_directory( quint64 request_id, QString const& path ){
-		auto entries = read_directory( path );
-		if( !entries ){
-			Q_EMIT operation_failed( request_id, entries.error() );
-			return;
-		}
-		Q_EMIT listing_ready( request_id, path, *entries );
-	}
+	void SftpSession::list_directory( std::uint64_t request_id, std::string path ){
+		_queue.async( [weak = weak_from_this(), request_id, path = std::move( path )]{
+			auto self = weak.lock();
+			if( !self )
+				return;
 
-	void SftpSession::resolve_path( quint64 request_id, QString const& path ){
-		if( _sftp == nullptr ){
-			Q_EMIT operation_failed( request_id, Error{ ErrorKind::SFTP, QObject::tr( "Not connected" ) } );
-			return;
-		}
-
-		char             resolved[1024] = {};
-		QByteArray const utf8           = path.toUtf8();
-		int const        length = libssh2_sftp_realpath( _sftp, utf8.constData(), resolved, sizeof( resolved ) - 1 );
-		if( length < 0 ){
-			Q_EMIT operation_failed( request_id, sftp_error( QObject::tr( "Cannot resolve %1" ).arg( path ) ) );
-			return;
-		}
-
-		Q_EMIT path_resolved( request_id, QString::fromUtf8( resolved, length ) );
-	}
-
-	void SftpSession::make_directory( quint64 request_id, QString const& path ){
-		QByteArray const utf8 = path.toUtf8();
-		if( libssh2_sftp_mkdir_ex( _sftp, utf8.constData(), static_cast<unsigned int>( utf8.size() ), 0755 ) != 0 ){
-			Q_EMIT operation_failed( request_id, sftp_error( QObject::tr( "Cannot create %1" ).arg( path ) ) );
-			return;
-		}
-		Q_EMIT operation_finished( request_id );
-	}
-
-	void SftpSession::rename_entry( quint64 request_id, QString const& from, QString const& to ){
-		QByteArray const source      = from.toUtf8();
-		QByteArray const destination = to.toUtf8();
-
-		int const rc = libssh2_sftp_rename_ex( _sftp, source.constData(), static_cast<unsigned int>( source.size() ),
-											   destination.constData(), static_cast<unsigned int>( destination.size() ),
-											   LIBSSH2_SFTP_RENAME_OVERWRITE | LIBSSH2_SFTP_RENAME_ATOMIC |
-												   LIBSSH2_SFTP_RENAME_NATIVE );
-
-		if( rc != 0 ){
-			Q_EMIT operation_failed( request_id,
-									 sftp_error( QObject::tr( "Cannot rename %1 to %2" ).arg( from, to ) ) );
-			return;
-		}
-		Q_EMIT operation_finished( request_id );
-	}
-
-	void SftpSession::change_permissions( quint64 request_id, QString const& path, quint32 mode ){
-		LIBSSH2_SFTP_ATTRIBUTES attributes{};
-		attributes.flags       = LIBSSH2_SFTP_ATTR_PERMISSIONS;
-		attributes.permissions = mode;
-
-		QByteArray const utf8 = path.toUtf8();
-		if( libssh2_sftp_stat_ex( _sftp, utf8.constData(), static_cast<unsigned int>( utf8.size() ),
-								  LIBSSH2_SFTP_SETSTAT, &attributes ) != 0 ){
-			Q_EMIT operation_failed( request_id,
-									 sftp_error( QObject::tr( "Cannot change the mode of %1" ).arg( path ) ) );
-			return;
-		}
-		Q_EMIT operation_finished( request_id );
-	}
-
-	void SftpSession::remove_entry( quint64 request_id, QString const& path, bool recursive ){
-		auto info = stat_entry( path );
-		if( !info ){
-			Q_EMIT operation_failed( request_id, info.error() );
-			return;
-		}
-
-		Status result;
-		if( info->is_directory && !info->is_symlink ){
-			if( recursive ){
-				result = remove_tree( request_id, path );
+			auto entries = self->read_directory( path );
+			if( !entries ){
+				self->operation_failed( request_id, entries.error() );
+				return;
 			}
-			else{
-				QByteArray const utf8 = path.toUtf8();
-				if( libssh2_sftp_rmdir_ex( _sftp, utf8.constData(), static_cast<unsigned int>( utf8.size() ) ) != 0 )
-					result = std::unexpected( sftp_error( QObject::tr( "Cannot remove %1" ).arg( path ) ) );
-			}
-		}
-		else{
-			QByteArray const utf8 = path.toUtf8();
-			if( libssh2_sftp_unlink_ex( _sftp, utf8.constData(), static_cast<unsigned int>( utf8.size() ) ) != 0 )
-				result = std::unexpected( sftp_error( QObject::tr( "Cannot delete %1" ).arg( path ) ) );
-		}
-
-		clear_cancel( request_id );
-
-		if( !result ){
-			Q_EMIT operation_failed( request_id, result.error() );
-			return;
-		}
-		Q_EMIT operation_finished( request_id );
+			self->listing_ready( request_id, path, *entries );
+		} );
 	}
 
-	Status SftpSession::remove_tree( quint64 request_id, QString const& path ){
+	void SftpSession::resolve_path( std::uint64_t request_id, std::string path ){
+		_queue.async( [weak = weak_from_this(), request_id, path = std::move( path )]{
+			auto self = weak.lock();
+			if( !self )
+				return;
+
+			if( self->_sftp == nullptr ){
+				self->operation_failed( request_id, Error{ ErrorKind::SFTP, "Not connected" } );
+				return;
+			}
+
+			char      resolved[1024] = {};
+			int const length = libssh2_sftp_realpath( self->_sftp, path.c_str(), resolved, sizeof( resolved ) - 1 );
+			if( length < 0 ){
+				self->operation_failed( request_id, self->sftp_error( std::format( "Cannot resolve {}", path ) ) );
+				return;
+			}
+
+			self->path_resolved( request_id, std::string( resolved, static_cast<std::size_t>( length ) ) );
+		} );
+	}
+
+	void SftpSession::make_directory( std::uint64_t request_id, std::string path ){
+		_queue.async( [weak = weak_from_this(), request_id, path = std::move( path )]{
+			auto self = weak.lock();
+			if( !self )
+				return;
+
+			if( libssh2_sftp_mkdir_ex( self->_sftp, path.c_str(), static_cast<unsigned int>( path.size() ), 0755 ) !=
+				0 ){
+				self->operation_failed( request_id, self->sftp_error( std::format( "Cannot create {}", path ) ) );
+				return;
+			}
+			self->operation_finished( request_id );
+		} );
+	}
+
+	void SftpSession::rename_entry( std::uint64_t request_id, std::string from, std::string to ){
+		_queue.async( [weak = weak_from_this(), request_id, from = std::move( from ), to = std::move( to )]{
+			auto self = weak.lock();
+			if( !self )
+				return;
+
+			int const rc = libssh2_sftp_rename_ex( self->_sftp, from.c_str(), static_cast<unsigned int>( from.size() ),
+												   to.c_str(), static_cast<unsigned int>( to.size() ),
+												   LIBSSH2_SFTP_RENAME_OVERWRITE | LIBSSH2_SFTP_RENAME_ATOMIC |
+													   LIBSSH2_SFTP_RENAME_NATIVE );
+
+			if( rc != 0 ){
+				self->operation_failed( request_id,
+										self->sftp_error( std::format( "Cannot rename {} to {}", from, to ) ) );
+				return;
+			}
+			self->operation_finished( request_id );
+		} );
+	}
+
+	void SftpSession::change_permissions( std::uint64_t request_id, std::string path, std::uint32_t mode ){
+		_queue.async( [weak = weak_from_this(), request_id, path = std::move( path ), mode]{
+			auto self = weak.lock();
+			if( !self )
+				return;
+
+			LIBSSH2_SFTP_ATTRIBUTES attributes{};
+			attributes.flags       = LIBSSH2_SFTP_ATTR_PERMISSIONS;
+			attributes.permissions = mode;
+
+			if( libssh2_sftp_stat_ex( self->_sftp, path.c_str(), static_cast<unsigned int>( path.size() ),
+									  LIBSSH2_SFTP_SETSTAT, &attributes ) != 0 ){
+				self->operation_failed( request_id,
+										self->sftp_error( std::format( "Cannot change the mode of {}", path ) ) );
+				return;
+			}
+			self->operation_finished( request_id );
+		} );
+	}
+
+	void SftpSession::remove_entry( std::uint64_t request_id, std::string path, bool recursive ){
+		_queue.async( [weak = weak_from_this(), request_id, path = std::move( path ), recursive]{
+			auto self = weak.lock();
+			if( !self )
+				return;
+
+			auto info = self->stat_entry( path );
+			if( !info ){
+				self->operation_failed( request_id, info.error() );
+				return;
+			}
+
+			Status result;
+			if( info->is_directory && !info->is_symlink ){
+				if( recursive ){
+					result = self->remove_tree( request_id, path );
+				}
+				else if( libssh2_sftp_rmdir_ex( self->_sftp, path.c_str(), static_cast<unsigned int>( path.size() ) ) !=
+						 0 ){
+					result = std::unexpected( self->sftp_error( std::format( "Cannot remove {}", path ) ) );
+				}
+			}
+			else if( libssh2_sftp_unlink_ex( self->_sftp, path.c_str(), static_cast<unsigned int>( path.size() ) ) !=
+					 0 ){
+				result = std::unexpected( self->sftp_error( std::format( "Cannot delete {}", path ) ) );
+			}
+
+			self->clear_cancel( request_id );
+
+			if( !result ){
+				self->operation_failed( request_id, result.error() );
+				return;
+			}
+			self->operation_finished( request_id );
+		} );
+	}
+
+	Status SftpSession::remove_tree( std::uint64_t request_id, std::string const& path ){
 		if( is_cancelled( request_id ) )
 			return cancelled();
 
@@ -380,16 +436,14 @@ namespace arterm::ssh
 				if( auto status = remove_tree( request_id, entry.path ); !status )
 					return status;
 			}
-			else{
-				QByteArray const utf8 = entry.path.toUtf8();
-				if( libssh2_sftp_unlink_ex( _sftp, utf8.constData(), static_cast<unsigned int>( utf8.size() ) ) != 0 )
-					return std::unexpected( sftp_error( QObject::tr( "Cannot delete %1" ).arg( entry.path ) ) );
+			else if( libssh2_sftp_unlink_ex( _sftp, entry.path.c_str(),
+											 static_cast<unsigned int>( entry.path.size() ) ) != 0 ){
+				return std::unexpected( sftp_error( std::format( "Cannot delete {}", entry.path ) ) );
 			}
 		}
 
-		QByteArray const utf8 = path.toUtf8();
-		if( libssh2_sftp_rmdir_ex( _sftp, utf8.constData(), static_cast<unsigned int>( utf8.size() ) ) != 0 )
-			return std::unexpected( sftp_error( QObject::tr( "Cannot remove %1" ).arg( path ) ) );
+		if( libssh2_sftp_rmdir_ex( _sftp, path.c_str(), static_cast<unsigned int>( path.size() ) ) != 0 )
+			return std::unexpected( sftp_error( std::format( "Cannot remove {}", path ) ) );
 
 		return {};
 	}
@@ -398,31 +452,30 @@ namespace arterm::ssh
 	// Transfers
 	// ---------------------------------------------------------------------------
 
-	void SftpSession::publish_progress( quint64 request_id, quint64 moved, quint64 total ){
-		static thread_local QElapsedTimer timer;
-		if( !timer.isValid() )
-			timer.start();
+	void SftpSession::publish_progress( std::uint64_t request_id, std::uint64_t moved, std::uint64_t total ){
+		auto const now     = std::chrono::steady_clock::now();
+		bool const first   = _last_progress_tick == std::chrono::steady_clock::time_point{};
+		auto const elapsed = now - _last_progress_tick;
 
-		qint64 const now = timer.elapsed();
-		if( _last_progress_tick != 0 && now - _last_progress_tick < PROGRESS_INTERVAL_MS && moved < total )
+		if( !first && elapsed < PROGRESS_INTERVAL && moved < total )
 			return;
 
 		TransferProgress progress;
 		progress.transferred = moved;
 		progress.total       = total;
 
-		if( _last_progress_tick != 0 && now > _last_progress_tick ){
-			double const seconds      = static_cast<double>( now - _last_progress_tick ) / 1000.0;
+		if( !first && elapsed > std::chrono::steady_clock::duration::zero() ){
+			double const seconds      = std::chrono::duration<double>( elapsed ).count();
 			progress.bytes_per_second = static_cast<double>( moved - _last_progress_bytes ) / seconds;
 		}
 
 		_last_progress_tick  = now;
 		_last_progress_bytes = moved;
 
-		Q_EMIT transfer_progress( request_id, progress );
+		transfer_progress( request_id, progress );
 	}
 
-	Result<quint64> SftpSession::remote_tree_size( QString const& path ){
+	Result<std::uint64_t> SftpSession::remote_tree_size( std::string const& path ){
 		auto info = stat_entry( path );
 		if( !info )
 			return std::unexpected( info.error() );
@@ -434,7 +487,7 @@ namespace arterm::ssh
 		if( !entries )
 			return std::unexpected( entries.error() );
 
-		quint64 total = 0;
+		std::uint64_t total = 0;
 		for( RemoteFileEntry const& entry : *entries ){
 			if( entry.is_directory && !entry.is_symlink ){
 				auto sub = remote_tree_size( entry.path );
@@ -449,49 +502,60 @@ namespace arterm::ssh
 		return total;
 	}
 
-	quint64 SftpSession::local_tree_size( QString const& path ){
-		QFileInfo const info( path );
-		if( !info.isDir() )
-			return static_cast<quint64>( info.size() );
+	std::uint64_t SftpSession::local_tree_size( std::string const& path ){
+		std::error_code ignored;
 
-		quint64      total = 0;
-		QDirIterator iterator( path, QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden, QDirIterator::Subdirectories );
-		while( iterator.hasNext() ){
-			iterator.next();
-			total += static_cast<quint64>( iterator.fileInfo().size() );
+		if( !fs::is_directory( path, ignored ) ){
+			auto const size = fs::file_size( path, ignored );
+			return ignored ? 0 : size;
+		}
+
+		std::uint64_t total = 0;
+		for( auto iterator =
+				 fs::recursive_directory_iterator( path, fs::directory_options::skip_permission_denied, ignored );
+			 auto const& entry : iterator ){
+			if( entry.is_regular_file( ignored ) )
+				total += entry.file_size( ignored );
 		}
 		return total;
 	}
 
-	void SftpSession::download( quint64 request_id, QString const& remote_path, QString const& local_path ){
-		_last_progress_tick  = 0;
-		_last_progress_bytes = 0;
+	void SftpSession::download( std::uint64_t request_id, std::string remote_path, std::string local_path ){
+		_queue.async( [weak = weak_from_this(), request_id, remote_path = std::move( remote_path ),
+					   local_path = std::move( local_path )]{
+			auto self = weak.lock();
+			if( !self )
+				return;
 
-		auto total = remote_tree_size( remote_path );
-		if( !total ){
-			clear_cancel( request_id );
-			Q_EMIT operation_failed( request_id, total.error() );
-			return;
-		}
+			self->_last_progress_tick  = {};
+			self->_last_progress_bytes = 0;
 
-		Q_EMIT transfer_started( request_id, *total );
+			auto total = self->remote_tree_size( remote_path );
+			if( !total ){
+				self->clear_cancel( request_id );
+				self->operation_failed( request_id, total.error() );
+				return;
+			}
 
-		quint64 moved  = 0;
-		auto    status = download_tree( request_id, remote_path, local_path, *total, moved );
+			self->transfer_started( request_id, *total );
 
-		clear_cancel( request_id );
+			std::uint64_t moved  = 0;
+			auto          status = self->download_tree( request_id, remote_path, local_path, *total, moved );
 
-		if( !status ){
-			Q_EMIT operation_failed( request_id, status.error() );
-			return;
-		}
+			self->clear_cancel( request_id );
 
-		publish_progress( request_id, *total, *total );
-		Q_EMIT transfer_finished( request_id );
+			if( !status ){
+				self->operation_failed( request_id, status.error() );
+				return;
+			}
+
+			self->publish_progress( request_id, *total, *total );
+			self->transfer_finished( request_id );
+		} );
 	}
 
-	Status SftpSession::download_tree( quint64 request_id, QString const& remote_path, QString const& local_path,
-									   quint64 total, quint64& moved ){
+	Status SftpSession::download_tree( std::uint64_t request_id, std::string const& remote_path,
+									   std::string const& local_path, std::uint64_t total, std::uint64_t& moved ){
 		if( is_cancelled( request_id ) )
 			return cancelled();
 
@@ -502,15 +566,17 @@ namespace arterm::ssh
 		if( !info->is_directory )
 			return download_file( request_id, remote_path, local_path, total, moved );
 
-		if( !QDir().mkpath( local_path ) )
-			return fail( ErrorKind::LOCAL_IO, QObject::tr( "Cannot create %1" ).arg( local_path ) );
+		std::error_code error;
+		fs::create_directories( local_path, error );
+		if( error )
+			return fail( ErrorKind::LOCAL_IO, std::format( "Cannot create {}", local_path ) );
 
 		auto entries = read_directory( remote_path );
 		if( !entries )
 			return std::unexpected( entries.error() );
 
 		for( RemoteFileEntry const& entry : *entries ){
-			QString const target = QDir( local_path ).filePath( entry.name );
+			std::string const target = local_path + "/" + entry.name;
 			if( auto status = download_tree( request_id, entry.path, target, total, moved ); !status )
 				return status;
 		}
@@ -518,44 +584,43 @@ namespace arterm::ssh
 		return {};
 	}
 
-	Status SftpSession::download_file( quint64 request_id, QString const& remote_path, QString const& local_path,
-									   quint64 total, quint64& moved ){
+	Status SftpSession::download_file( std::uint64_t request_id, std::string const& remote_path,
+									   std::string const& local_path, std::uint64_t total, std::uint64_t& moved ){
 		if( _backend == TransferBackend::SCP ){
-			quint64 const base   = moved;
-			auto          status = scp::receive_file( _connection->session(), remote_path, local_path,
-													  [this, request_id, base, total, &moved]( quint64 transferred, quint64 ){
-                                                 moved = base + transferred;
-                                                 publish_progress( request_id, moved, total );
-                                                 return !is_cancelled( request_id );
-                                             } );
-			return status;
+			std::uint64_t const base = moved;
+			return scp::receive_file(
+				_connection->session(), remote_path, local_path,
+				[this, request_id, base, total, &moved]( std::uint64_t transferred, std::uint64_t ){
+					moved = base + transferred;
+					publish_progress( request_id, moved, total );
+					return !is_cancelled( request_id );
+				} );
 		}
 
-		QByteArray const     utf8 = remote_path.toUtf8();
 		LIBSSH2_SFTP_HANDLE* handle =
-			libssh2_sftp_open_ex( _sftp, utf8.constData(), static_cast<unsigned int>( utf8.size() ), LIBSSH2_FXF_READ,
-								  0, LIBSSH2_SFTP_OPENFILE );
+			libssh2_sftp_open_ex( _sftp, remote_path.c_str(), static_cast<unsigned int>( remote_path.size() ),
+								  LIBSSH2_FXF_READ, 0, LIBSSH2_SFTP_OPENFILE );
 		if( handle == nullptr )
-			return std::unexpected( sftp_error( QObject::tr( "Cannot open %1" ).arg( remote_path ) ) );
+			return std::unexpected( sftp_error( std::format( "Cannot open {}", remote_path ) ) );
 
-		struct HandleGuard
-		{
-			LIBSSH2_SFTP_HANDLE* handle;
-			~HandleGuard() { libssh2_sftp_close_handle( handle ); }
-		} guard{ handle };
+		HandleGuard const guard{ handle };
 
-		QFile output( local_path );
-		if( !output.open( QIODevice::WriteOnly | QIODevice::Truncate ) ){
+		FilePtr output( std::fopen( local_path.c_str(), "wb" ), &std::fclose );
+		if( !output )
 			return fail( ErrorKind::LOCAL_IO,
-						 QObject::tr( "Cannot write %1: %2" ).arg( local_path, output.errorString() ) );
-		}
+						 std::format( "Cannot write {}: {}", local_path, std::strerror( errno ) ) );
 
-		QByteArray buffer( CHUNK_SIZE, Qt::Uninitialized );
+		auto const discard_partial_file = [&output, &local_path]{
+			output.reset();
+			std::error_code ignored;
+			fs::remove( local_path, ignored );
+		};
+
+		std::string buffer( CHUNK_SIZE, '\0' );
 
 		while( true ){
 			if( is_cancelled( request_id ) ){
-				output.close();
-				output.remove();
+				discard_partial_file();
 				return cancelled();
 			}
 
@@ -563,140 +628,138 @@ namespace arterm::ssh
 			if( count == 0 )
 				break;
 			if( count < 0 ){
-				output.close();
-				output.remove();
-				return std::unexpected( sftp_error( QObject::tr( "Cannot read %1" ).arg( remote_path ) ) );
+				discard_partial_file();
+				return std::unexpected( sftp_error( std::format( "Cannot read {}", remote_path ) ) );
 			}
 
-			if( output.write( buffer.constData(), static_cast<qint64>( count ) ) != static_cast<qint64>( count ) ){
-				QString const reason = output.errorString();
-				output.close();
-				output.remove();
-				return fail( ErrorKind::LOCAL_IO, QObject::tr( "Cannot write %1: %2" ).arg( local_path, reason ) );
+			auto const chunk = static_cast<std::size_t>( count );
+			if( std::fwrite( buffer.data(), 1, chunk, output.get() ) != chunk ){
+				int const write_errno = errno;
+				discard_partial_file();
+				return fail( ErrorKind::LOCAL_IO,
+							 std::format( "Cannot write {}: {}", local_path, std::strerror( write_errno ) ) );
 			}
 
-			moved += static_cast<quint64>( count );
+			moved += chunk;
 			publish_progress( request_id, moved, total );
 		}
 
-		if( !output.flush() ){
+		if( std::fflush( output.get() ) != 0 )
 			return fail( ErrorKind::LOCAL_IO,
-						 QObject::tr( "Cannot flush %1: %2" ).arg( local_path, output.errorString() ) );
-		}
+						 std::format( "Cannot flush {}: {}", local_path, std::strerror( errno ) ) );
 
 		return {};
 	}
 
-	void SftpSession::upload( quint64 request_id, QString const& local_path, QString const& remote_path ){
-		_last_progress_tick  = 0;
-		_last_progress_bytes = 0;
+	void SftpSession::upload( std::uint64_t request_id, std::string local_path, std::string remote_path ){
+		_queue.async( [weak = weak_from_this(), request_id, local_path = std::move( local_path ),
+					   remote_path = std::move( remote_path )]{
+			auto self = weak.lock();
+			if( !self )
+				return;
 
-		if( !QFileInfo::exists( local_path ) ){
-			clear_cancel( request_id );
-			Q_EMIT operation_failed(
-				request_id, Error{ ErrorKind::LOCAL_IO, QObject::tr( "%1 does not exist" ).arg( local_path ) } );
-			return;
-		}
+			self->_last_progress_tick  = {};
+			self->_last_progress_bytes = 0;
 
-		quint64 const total = local_tree_size( local_path );
-		Q_EMIT transfer_started( request_id, total );
+			std::error_code ignored;
+			if( !fs::exists( local_path, ignored ) ){
+				self->clear_cancel( request_id );
+				self->operation_failed( request_id,
+										Error{ ErrorKind::LOCAL_IO, std::format( "{} does not exist", local_path ) } );
+				return;
+			}
 
-		quint64 moved  = 0;
-		auto    status = upload_tree( request_id, local_path, remote_path, total, moved );
+			std::uint64_t const total = local_tree_size( local_path );
+			self->transfer_started( request_id, total );
 
-		clear_cancel( request_id );
+			std::uint64_t moved  = 0;
+			auto          status = self->upload_tree( request_id, local_path, remote_path, total, moved );
 
-		if( !status ){
-			Q_EMIT operation_failed( request_id, status.error() );
-			return;
-		}
+			self->clear_cancel( request_id );
 
-		publish_progress( request_id, total, total );
-		Q_EMIT transfer_finished( request_id );
+			if( !status ){
+				self->operation_failed( request_id, status.error() );
+				return;
+			}
+
+			self->publish_progress( request_id, total, total );
+			self->transfer_finished( request_id );
+		} );
 	}
 
-	Status SftpSession::upload_tree( quint64 request_id, QString const& local_path, QString const& remote_path,
-									 quint64 total, quint64& moved ){
+	Status SftpSession::upload_tree( std::uint64_t request_id, std::string const& local_path,
+									 std::string const& remote_path, std::uint64_t total, std::uint64_t& moved ){
 		if( is_cancelled( request_id ) )
 			return cancelled();
 
-		QFileInfo const info( local_path );
-		if( !info.isDir() )
+		std::error_code ignored;
+		if( !fs::is_directory( local_path, ignored ) )
 			return upload_file( request_id, local_path, remote_path, total, moved );
 
-		QByteArray const utf8 = remote_path.toUtf8();
-		int const rc = libssh2_sftp_mkdir_ex( _sftp, utf8.constData(), static_cast<unsigned int>( utf8.size() ), 0755 );
+		int const rc =
+			libssh2_sftp_mkdir_ex( _sftp, remote_path.c_str(), static_cast<unsigned int>( remote_path.size() ), 0755 );
 		if( rc != 0 && libssh2_sftp_last_error( _sftp ) != LIBSSH2_FX_FILE_ALREADY_EXISTS )
-			return std::unexpected( sftp_error( QObject::tr( "Cannot create %1" ).arg( remote_path ) ) );
+			return std::unexpected( sftp_error( std::format( "Cannot create {}", remote_path ) ) );
 
-		QDir const directory( local_path );
-		auto const children = directory.entryInfoList( QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden );
-
-		for( QFileInfo const& child : children ){
-			QString const target = join_remote( remote_path, child.fileName() );
-			if( auto status = upload_tree( request_id, child.absoluteFilePath(), target, total, moved ); !status )
+		for( auto const& child :
+			 fs::directory_iterator( local_path, fs::directory_options::skip_permission_denied, ignored ) ){
+			std::string const name   = child.path().filename().string();
+			std::string const target = join_remote( remote_path, name );
+			if( auto status = upload_tree( request_id, child.path().string(), target, total, moved ); !status )
 				return status;
 		}
 
 		return {};
 	}
 
-	Status SftpSession::upload_file( quint64 request_id, QString const& local_path, QString const& remote_path,
-									 quint64 total, quint64& moved ){
+	Status SftpSession::upload_file( std::uint64_t request_id, std::string const& local_path,
+									 std::string const& remote_path, std::uint64_t total, std::uint64_t& moved ){
 		if( _backend == TransferBackend::SCP ){
-			quint64 const base = moved;
+			std::uint64_t const base = moved;
 			return scp::send_file( _connection->session(), local_path, remote_path,
-								   [this, request_id, base, total, &moved]( quint64 transferred, quint64 ){
+								   [this, request_id, base, total, &moved]( std::uint64_t transferred, std::uint64_t ){
 									   moved = base + transferred;
 									   publish_progress( request_id, moved, total );
 									   return !is_cancelled( request_id );
 								   } );
 		}
 
-		QFile input( local_path );
-		if( !input.open( QIODevice::ReadOnly ) ){
-			return fail( ErrorKind::LOCAL_IO,
-						 QObject::tr( "Cannot read %1: %2" ).arg( local_path, input.errorString() ) );
-		}
+		FilePtr input( std::fopen( local_path.c_str(), "rb" ), &std::fclose );
+		if( !input )
+			return fail( ErrorKind::LOCAL_IO, std::format( "Cannot read {}: {}", local_path, std::strerror( errno ) ) );
 
-		long const mode = QFileInfo( local_path ).isExecutable() ? 0755 : 0644;
+		struct ::stat info{};
+		long const mode = ( ::stat( local_path.c_str(), &info ) == 0 && ( info.st_mode & S_IXUSR ) != 0 ) ? 0755 : 0644;
 
-		QByteArray const     utf8   = remote_path.toUtf8();
 		LIBSSH2_SFTP_HANDLE* handle = libssh2_sftp_open_ex(
-			_sftp, utf8.constData(), static_cast<unsigned int>( utf8.size() ),
+			_sftp, remote_path.c_str(), static_cast<unsigned int>( remote_path.size() ),
 			LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC, mode, LIBSSH2_SFTP_OPENFILE );
 		if( handle == nullptr )
-			return std::unexpected( sftp_error( QObject::tr( "Cannot create %1" ).arg( remote_path ) ) );
+			return std::unexpected( sftp_error( std::format( "Cannot create {}", remote_path ) ) );
 
-		struct HandleGuard
-		{
-			LIBSSH2_SFTP_HANDLE* handle;
-			~HandleGuard() { libssh2_sftp_close_handle( handle ); }
-		} guard{ handle };
+		HandleGuard const guard{ handle };
 
-		QByteArray buffer( CHUNK_SIZE, Qt::Uninitialized );
+		std::string buffer( CHUNK_SIZE, '\0' );
 
 		while( true ){
 			if( is_cancelled( request_id ) )
 				return cancelled();
 
-			qint64 const read = input.read( buffer.data(), CHUNK_SIZE );
-			if( read < 0 ){
-				return fail( ErrorKind::LOCAL_IO,
-							 QObject::tr( "Cannot read %1: %2" ).arg( local_path, input.errorString() ) );
-			}
-			if( read == 0 )
+			std::size_t const read = std::fread( buffer.data(), 1, CHUNK_SIZE, input.get() );
+			if( read == 0 ){
+				if( std::ferror( input.get() ) != 0 )
+					return fail( ErrorKind::LOCAL_IO, std::format( "Cannot read {}", local_path ) );
 				break;
+			}
 
-			qint64 offset = 0;
+			std::size_t offset = 0;
 			while( offset < read ){
-				auto const written =
-					libssh2_sftp_write( handle, buffer.constData() + offset, static_cast<size_t>( read - offset ) );
+				auto const written = libssh2_sftp_write( handle, buffer.data() + offset, read - offset );
 				if( written < 0 )
-					return std::unexpected( sftp_error( QObject::tr( "Cannot write %1" ).arg( remote_path ) ) );
+					return std::unexpected( sftp_error( std::format( "Cannot write {}", remote_path ) ) );
 
-				offset += static_cast<qint64>( written );
-				moved += static_cast<quint64>( written );
+				offset += static_cast<std::size_t>( written );
+				moved += static_cast<std::uint64_t>( written );
 				publish_progress( request_id, moved, total );
 			}
 		}

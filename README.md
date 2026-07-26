@@ -8,9 +8,9 @@ Written in C++23, built with clang and CMake. The interface is AppKit; libssh2
 is the only third-party dependency.
 
 > **Migration in progress.** ArTerm is being moved off Qt onto native AppKit.
-> `core/` and `terminal/` are already pure C++23 and build without Qt; `ssh/`,
-> `model/`, `session/`, `files/` and `ui/` are still Qt and are not compiled
-> yet. See the source list at the bottom of `src/CMakeLists.txt`.
+> `core/`, `terminal/` and `ssh/` are already pure C++23 and build without Qt;
+> `model/`, `files/` and `ui/` are still Qt and are not compiled yet. See the
+> source list at the bottom of `src/CMakeLists.txt`.
 
 ## What it does
 
@@ -65,8 +65,8 @@ cmake --build build --target sign     # ad-hoc signature; override with
 cmake --build build --target dmg      # produces a .dmg
 ```
 
-Universal (arm64 + x86_64) is the default; override with
-`-DCMAKE_OSX_ARCHITECTURES=arm64` for a single-arch build.
+The build targets the host architecture; a universal release needs a fat
+libssh2 plus an explicit `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"`.
 
 ### Tests
 
@@ -74,12 +74,11 @@ Universal (arm64 + x86_64) is the default; override with
 ctest --test-dir build --output-on-failure
 ```
 
-The suite covers the parser, screen buffer, emulator, key encoding, character
-widths, colour scheme and host store — the parts that are pure logic and
-therefore worth testing. Nothing in it touches the UI, so it needs no display.
-
-The tests are being moved from QTest to Catch2 along with the sources they
-cover; `tests/` currently builds no targets.
+The suite is Catch2 (fetched by CMake at configure time) and covers the
+parser, screen buffer, emulator, key encoding, character widths, colour scheme,
+base64 and the Signal primitive — the parts that are pure logic and therefore
+worth testing. Nothing in it touches the UI, so it needs no display. The host
+store test returns when `model/` comes off Qt.
 
 ### Other platforms
 
@@ -91,10 +90,9 @@ configure anywhere else.
 
 ```
 src/
-  core/       Result/Error type used throughout
+  core/       Result/Error, Signal, dispatch-queue primitives, logging, paths
   ssh/        libssh2: connection, auth, known_hosts, shell channel, SFTP, SCP
-  terminal/   VT parser, screen buffer, emulator, key encoder, rendering widget
-  session/    GUI-thread facades over the SSH worker threads
+  terminal/   VT parser, screen buffer, emulator, key encoder
   files/      File models, dual-pane browser, transfer queue
   model/      Host profiles and Keychain-backed secrets
   ui/         Window, sidebar, dialogs, theme
@@ -105,13 +103,13 @@ src/
 Each session opens **two** SSH connections: one drives the interactive shell,
 one drives SFTP. A libssh2 session may not be used from two threads, and putting
 both on one connection would make the terminal stutter during a large transfer.
-Each connection lives on its own worker thread; the GUI thread only ever talks
-to the `session::` facades through queued signals.
+Each connection lives on its own serial dispatch queue owned by the session
+object; signals fire on that queue and UI slots marshal to the main queue.
 
 The shell connection switches to non-blocking mode after login and is pumped by
-a socket notifier, so output appears without polling. The SFTP connection stays
-blocking, which is why it needs its own thread — a multi-gigabyte download runs
-there without touching the event loop.
+a dispatch read source, so output appears without polling. The SFTP connection
+stays blocking, which is why it needs its own queue — a multi-gigabyte download
+runs there without touching the main queue.
 
 ### Theming
 

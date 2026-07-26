@@ -33,10 +33,9 @@ if(NOT APPLE)
 endif()
 
 if(APPLE)
-    # Universal binary by default: Apple Silicon first, Intel for compatibility.
-    if(NOT CMAKE_OSX_ARCHITECTURES)
-        set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "" FORCE)
-    endif()
+    # Native architecture by default: Homebrew ships single-arch libssh2, so a
+    # universal build needs a fat libssh2 and an explicit
+    # -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" from whoever prepares a release.
     # 13.3 rather than 13.0: libc++'s std::format instantiates the floating-point
     # formatter whatever the format string says, and std::to_chars(long double)
     # is unavailable before 13.3. Ventura shipped 13.3 in March 2023.

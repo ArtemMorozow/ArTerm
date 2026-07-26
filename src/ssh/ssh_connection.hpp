@@ -15,7 +15,7 @@ namespace arterm::ssh
 	/// Owns one TCP socket plus its libssh2 session: resolve, connect, verify the
 	/// host key, authenticate.
 	///
-	/// Every method must be called from the thread that created the object.
+	/// Every method must be called from the queue that created the object.
 	/// ArTerm opens two connections per host - one driving the interactive shell,
 	/// one driving SFTP - because a libssh2 session may not be used concurrently
 	/// from several threads.
@@ -28,7 +28,7 @@ namespace arterm::ssh
 
 		/// Invoked when an interactive credential is required and the profile does
 		/// not carry one. Returns std::nullopt when the user cancels.
-		using CredentialPrompt = std::function<std::optional<QString>( QString const& prompt, bool echo )>;
+		using CredentialPrompt = std::function<std::optional<std::string>( std::string const& prompt, bool echo )>;
 
 		explicit SshConnection( HostProfile profile );
 		~SshConnection();
@@ -60,13 +60,13 @@ namespace arterm::ssh
 		[[nodiscard]] bool wait_socket( int timeout_ms = 250 ) const;
 
 		/// Build an `Error` from the session's last error string.
-		[[nodiscard]] Error last_error( ErrorKind kind, QString const& context ) const;
+		[[nodiscard]] Error last_error( ErrorKind kind, std::string const& context ) const;
 
 		/// The authentication method that actually succeeded.
 		[[nodiscard]] AuthMethod used_auth_method() const noexcept { return _used_auth; }
 
 		/// Server banner, if the host sent one.
-		[[nodiscard]] QString banner() const { return _banner; }
+		[[nodiscard]] std::string const& banner() const noexcept { return _banner; }
 
 	private:
 		[[nodiscard]] Status open_socket();
@@ -80,8 +80,8 @@ namespace arterm::ssh
 		[[nodiscard]] Status auth_keyboard_interactive();
 
 		/// Resolve the password lazily so we only prompt when a method needs it.
-		[[nodiscard]] std::optional<QString> resolve_password();
-		[[nodiscard]] std::optional<QString> resolve_passphrase();
+		[[nodiscard]] std::optional<std::string> resolve_password();
+		[[nodiscard]] std::optional<std::string> resolve_passphrase();
 
 		HostProfile      _profile;
 		HostKeyPrompt    _host_key_prompt;
@@ -90,10 +90,10 @@ namespace arterm::ssh
 		int              _socket{ -1 };
 		LIBSSH2_SESSION* _session{ nullptr };
 		AuthMethod       _used_auth{ AuthMethod::AGENT };
-		QString          _banner;
+		std::string      _banner;
 
-		std::optional<QString> _cached_password;
-		std::optional<QString> _cached_passphrase;
+		std::optional<std::string> _cached_password;
+		std::optional<std::string> _cached_passphrase;
 
 		/// Consumed by the keyboard-interactive callback through the session
 		/// abstract pointer.

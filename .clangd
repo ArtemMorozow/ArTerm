@@ -1,4 +1,2 @@
 CompileFlags:
-  Add:
-    - -std=c++23
-    - -I/Users/makellan/dev/home-projects/ArTerm/src
+  CompilationDatabase: build

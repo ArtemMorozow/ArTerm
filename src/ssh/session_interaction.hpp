@@ -1,30 +1,37 @@
 #pragma once
 
+#include "core/non_copyable.hpp"
 #include "ssh/ssh_types.hpp"
 
-#include <QHash>
-#include <QObject>
-#include <QSet>
-#include <QString>
-
+#include <functional>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace arterm::ssh
 {
 
-	/// Bridges the worker threads back to the GUI thread when a connection needs a
+	/// Bridges the session queues back to the main queue when a connection needs a
 	/// human decision (host key trust, a missing password).
 	///
-	/// The object lives on the GUI thread. Workers call `confirm_host_key` /
-	/// `ask_credential` directly; those forward to the GUI thread with a blocking
-	/// queued invocation, so the calling worker parks until the user answers.
-	class SessionInteraction : public QObject
+	/// The UI layer installs the two handlers; both are invoked on the main queue.
+	/// Workers call `confirm_host_key` / `ask_credential` directly - those marshal
+	/// to the main queue with `on_main_sync`, so the calling worker parks until
+	/// the user answers. A missing handler answers "rejected"/"cancelled".
+	class SessionInteraction : NonCopyable
 	{
-		Q_OBJECT
-
 	public:
-		explicit SessionInteraction( QObject* parent = nullptr );
+		/// Returns true when the user chose to trust the key.
+		using HostKeyHandler = std::function<bool( HostKeyInfo const& )>;
+
+		/// Returns std::nullopt when the user cancelled the prompt; an empty
+		/// string is a legitimate submitted answer.
+		using CredentialHandler = std::function<std::optional<std::string>( std::string const& prompt, bool echo )>;
+
+		void set_host_key_handler( HostKeyHandler handler ) { _host_key_handler = std::move( handler ); }
+		void set_credential_handler( CredentialHandler handler ) { _credential_handler = std::move( handler ); }
 
 		/// Thread safe. Blocks the calling thread until the user decides.
 		[[nodiscard]] bool confirm_host_key( HostKeyInfo const& info );
@@ -33,25 +40,16 @@ namespace arterm::ssh
 		///
 		/// An answer is remembered for the process lifetime so a reconnect does not
 		/// ask again; nothing is persisted to disk.
-		[[nodiscard]] std::optional<QString> ask_credential( QString const& prompt, bool echo );
+		[[nodiscard]] std::optional<std::string> ask_credential( std::string const& prompt, bool echo );
 
 		/// Drops the remembered passwords, e.g. after one was rejected.
 		void forget_cached_answers();
 
-	Q_SIGNALS:
-		/// Emitted on the GUI thread. A slot must call `resolve_host_key` before it
-		/// returns, otherwise the request is treated as a rejection.
-		void host_key_decision_requested( arterm::ssh::HostKeyInfo const& info, bool* accepted );
-
-		/// Emitted on the GUI thread. `answer` stays empty when the user cancels;
-		/// `provided` distinguishes "cancelled" from "submitted an empty string".
-		void credential_requested( QString const& prompt, bool echo, QString* answer, bool* provided );
-
 	private:
-		void handle_host_key_request( HostKeyInfo const& info, bool* accepted );
-		void handle_credential_request( QString const& prompt, bool echo, QString* answer, bool* provided );
+		[[nodiscard]] static std::string host_key_cache_key( HostKeyInfo const& info );
 
-		[[nodiscard]] static QString host_key_cache_key( HostKeyInfo const& info );
+		HostKeyHandler    _host_key_handler;
+		CredentialHandler _credential_handler;
 
 		/// Serialises prompts and remembers the answers.
 		///
@@ -60,11 +58,11 @@ namespace arterm::ssh
 		/// asked twice for the same decision. The mutex makes the second connection
 		/// wait for the first answer, and the caches let it reuse that answer
 		/// instead of prompting again.
-		std::mutex              _prompt_mutex;
-		QHash<QString, bool>    _host_key_decisions;
-		QHash<QString, QString> _credential_answers;
+		std::mutex                                   _prompt_mutex;
+		std::unordered_map<std::string, bool>        _host_key_decisions;
+		std::unordered_map<std::string, std::string> _credential_answers;
 		/// Prompts the user cancelled, so a retry does not re-ask immediately.
-		QSet<QString> _declined_credentials;
+		std::unordered_set<std::string> _declined_credentials;
 	};
 
 } // namespace arterm::ssh

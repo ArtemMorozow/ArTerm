@@ -1,10 +1,15 @@
 #include "ssh/scp_transfer.hpp"
 
-#include <QFile>
-#include <QFileInfo>
-#include <QObject>
-
 #include <libssh2.h>
+
+#include <algorithm>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <format>
+#include <memory>
+#include <string>
 
 #include <sys/stat.h>
 
@@ -13,29 +18,23 @@ namespace arterm::ssh::scp
 	namespace
 	{
 
-		constexpr qint64 CHUNK_SIZE = 64 * 1024;
+		constexpr std::size_t CHUNK_SIZE = 64 * 1024;
 
-		Error session_error( LIBSSH2_SESSION* session, QString const& context ){
+		using FilePtr = std::unique_ptr<std::FILE, decltype( &std::fclose )>;
+
+		Error session_error( LIBSSH2_SESSION* session, std::string const& context ){
 			char*     message = nullptr;
 			int       length  = 0;
 			int const code    = libssh2_session_last_error( session, &message, &length, 0 );
-			QString   detail  = QString::fromUtf8( message == nullptr ? "" : message, length );
-			if( detail.isEmpty() )
-				detail = QObject::tr( "libssh2 error %1" ).arg( code );
-			return Error{ ErrorKind::SFTP, context + QLatin1String( ": " ) + detail, code };
+
+			std::string detail = ( message == nullptr || length <= 0 )
+									 ? std::string{}
+									 : std::string( message, static_cast<std::size_t>( length ) );
+			if( detail.empty() )
+				detail = std::format( "libssh2 error {}", code );
+
+			return Error{ ErrorKind::SFTP, context + ": " + detail, code };
 		}
-
-	} // namespace
-
-	Status receive_file( LIBSSH2_SESSION* session, QString const& remote_path, QString const& local_path,
-						 ProgressCallback const& on_progress ){
-		libssh2_struct_stat file_info{};
-		QByteArray const    remote = remote_path.toUtf8();
-
-		LIBSSH2_CHANNEL* channel = libssh2_scp_recv2( session, remote.constData(), &file_info );
-		if( channel == nullptr )
-			return std::unexpected(
-				session_error( session, QObject::tr( "SCP download of %1 failed" ).arg( remote_path ) ) );
 
 		struct ChannelGuard
 		{
@@ -44,118 +43,123 @@ namespace arterm::ssh::scp
 				libssh2_channel_close( channel );
 				libssh2_channel_free( channel );
 			}
-		} guard{ channel };
+		};
 
-		QFile output( local_path );
-		if( !output.open( QIODevice::WriteOnly | QIODevice::Truncate ) ){
+	} // namespace
+
+	Status receive_file( LIBSSH2_SESSION* session, std::string const& remote_path, std::string const& local_path,
+						 ProgressCallback const& on_progress ){
+		libssh2_struct_stat file_info{};
+
+		LIBSSH2_CHANNEL* channel = libssh2_scp_recv2( session, remote_path.c_str(), &file_info );
+		if( channel == nullptr )
+			return std::unexpected( session_error( session, std::format( "SCP download of {} failed", remote_path ) ) );
+
+		ChannelGuard const guard{ channel };
+
+		FilePtr output( std::fopen( local_path.c_str(), "wb" ), &std::fclose );
+		if( !output )
 			return fail( ErrorKind::LOCAL_IO,
-						 QObject::tr( "Cannot write %1: %2" ).arg( local_path, output.errorString() ) );
-		}
+						 std::format( "Cannot write {}: {}", local_path, std::strerror( errno ) ) );
 
-		auto const total    = static_cast<quint64>( file_info.st_size );
-		quint64    received = 0;
-		QByteArray buffer( CHUNK_SIZE, Qt::Uninitialized );
+		auto const discard_partial_file = [&output, &local_path]{
+			output.reset();
+			std::error_code ignored;
+			std::filesystem::remove( local_path, ignored );
+		};
+
+		auto const    total    = static_cast<std::uint64_t>( file_info.st_size );
+		std::uint64_t received = 0;
+		std::string   buffer( CHUNK_SIZE, '\0' );
 
 		while( received < total ){
-			auto const wanted = static_cast<qint64>( std::min<quint64>( CHUNK_SIZE, total - received ) );
-			auto const count  = libssh2_channel_read( channel, buffer.data(), static_cast<size_t>( wanted ) );
+			auto const wanted = static_cast<std::size_t>( std::min<std::uint64_t>( CHUNK_SIZE, total - received ) );
+			auto const count  = libssh2_channel_read( channel, buffer.data(), wanted );
 
 			if( count == LIBSSH2_ERROR_EAGAIN )
 				continue;
 			if( count < 0 ){
-				output.remove();
+				discard_partial_file();
 				return std::unexpected(
-					session_error( session, QObject::tr( "SCP download of %1 failed" ).arg( remote_path ) ) );
+					session_error( session, std::format( "SCP download of {} failed", remote_path ) ) );
 			}
 			if( count == 0 )
 				break;
 
-			if( output.write( buffer.constData(), static_cast<qint64>( count ) ) != static_cast<qint64>( count ) ){
-				output.remove();
+			auto const chunk = static_cast<std::size_t>( count );
+			if( std::fwrite( buffer.data(), 1, chunk, output.get() ) != chunk ){
+				int const write_errno = errno;
+				discard_partial_file();
 				return fail( ErrorKind::LOCAL_IO,
-							 QObject::tr( "Cannot write %1: %2" ).arg( local_path, output.errorString() ) );
+							 std::format( "Cannot write {}: {}", local_path, std::strerror( write_errno ) ) );
 			}
 
-			received += static_cast<quint64>( count );
+			received += chunk;
 
 			if( on_progress && !on_progress( received, total ) ){
-				output.close();
-				output.remove();
+				discard_partial_file();
 				return cancelled();
 			}
 		}
 
-		if( !output.flush() ){
+		if( std::fflush( output.get() ) != 0 )
 			return fail( ErrorKind::LOCAL_IO,
-						 QObject::tr( "Cannot flush %1: %2" ).arg( local_path, output.errorString() ) );
-		}
-		output.close();
+						 std::format( "Cannot flush {}: {}", local_path, std::strerror( errno ) ) );
+		output.reset();
 
-		QFile::setPermissions( local_path, QFile::permissions( local_path ) | QFile::ReadOwner | QFile::WriteOwner );
+		// Make sure the file is usable by its owner whatever the remote mode was.
+		namespace fs = std::filesystem;
+		std::error_code ignored;
+		fs::permissions( local_path, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::add, ignored );
 		return {};
 	}
 
-	Status send_file( LIBSSH2_SESSION* session, QString const& local_path, QString const& remote_path,
+	Status send_file( LIBSSH2_SESSION* session, std::string const& local_path, std::string const& remote_path,
 					  ProgressCallback const& on_progress ){
-		QFile input( local_path );
-		if( !input.open( QIODevice::ReadOnly ) ){
-			return fail( ErrorKind::LOCAL_IO,
-						 QObject::tr( "Cannot read %1: %2" ).arg( local_path, input.errorString() ) );
-		}
+		FilePtr input( std::fopen( local_path.c_str(), "rb" ), &std::fclose );
+		if( !input )
+			return fail( ErrorKind::LOCAL_IO, std::format( "Cannot read {}: {}", local_path, std::strerror( errno ) ) );
 
-		QFileInfo const info( local_path );
-		auto const      total = static_cast<quint64>( info.size() );
+		struct ::stat info{};
+		if( ::stat( local_path.c_str(), &info ) != 0 )
+			return fail( ErrorKind::LOCAL_IO, std::format( "Cannot stat {}: {}", local_path, std::strerror( errno ) ) );
+
+		auto const total = static_cast<std::uint64_t>( info.st_size );
 
 		// Carry over the executable bit; everything else uses a sane default.
-		int mode = 0644;
-		if( info.isExecutable() )
-			mode = 0755;
+		int const mode = ( info.st_mode & S_IXUSR ) != 0 ? 0755 : 0644;
 
-		QByteArray const remote = remote_path.toUtf8();
-		LIBSSH2_CHANNEL* channel =
-			libssh2_scp_send64( session, remote.constData(), mode, static_cast<libssh2_int64_t>( total ),
-								static_cast<time_t>( info.lastModified().toSecsSinceEpoch() ),
-								static_cast<time_t>( info.lastRead().toSecsSinceEpoch() ) );
-
+		LIBSSH2_CHANNEL* channel = libssh2_scp_send64(
+			session, remote_path.c_str(), mode, static_cast<libssh2_int64_t>( total ), info.st_mtime, info.st_atime );
 		if( channel == nullptr )
-			return std::unexpected(
-				session_error( session, QObject::tr( "SCP upload of %1 failed" ).arg( local_path ) ) );
+			return std::unexpected( session_error( session, std::format( "SCP upload of {} failed", local_path ) ) );
 
-		struct ChannelGuard
-		{
-			LIBSSH2_CHANNEL* channel;
-			~ChannelGuard(){
-				libssh2_channel_close( channel );
-				libssh2_channel_free( channel );
-			}
-		} guard{ channel };
+		ChannelGuard const guard{ channel };
 
-		quint64    sent = 0;
-		QByteArray buffer( CHUNK_SIZE, Qt::Uninitialized );
+		std::uint64_t sent = 0;
+		std::string   buffer( CHUNK_SIZE, '\0' );
 
 		while( sent < total ){
-			qint64 const read = input.read( buffer.data(), CHUNK_SIZE );
-			if( read < 0 ){
-				return fail( ErrorKind::LOCAL_IO,
-							 QObject::tr( "Cannot read %1: %2" ).arg( local_path, input.errorString() ) );
-			}
-			if( read == 0 )
+			std::size_t const read = std::fread( buffer.data(), 1, CHUNK_SIZE, input.get() );
+			if( read == 0 ){
+				if( std::ferror( input.get() ) != 0 )
+					return fail( ErrorKind::LOCAL_IO, std::format( "Cannot read {}", local_path ) );
 				break;
+			}
 
-			qint64 offset = 0;
+			std::size_t offset = 0;
 			while( offset < read ){
-				auto const written =
-					libssh2_channel_write( channel, buffer.constData() + offset, static_cast<size_t>( read - offset ) );
+				auto const written = libssh2_channel_write( channel, buffer.data() + offset, read - offset );
 				if( written == LIBSSH2_ERROR_EAGAIN )
 					continue;
 				if( written < 0 ){
 					return std::unexpected(
-						session_error( session, QObject::tr( "SCP upload of %1 failed" ).arg( local_path ) ) );
+						session_error( session, std::format( "SCP upload of {} failed", local_path ) ) );
 				}
-				offset += static_cast<qint64>( written );
+				offset += static_cast<std::size_t>( written );
 			}
 
-			sent += static_cast<quint64>( read );
+			sent += read;
 
 			if( on_progress && !on_progress( sent, total ) )
 				return cancelled();

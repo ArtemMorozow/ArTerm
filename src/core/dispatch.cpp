@@ -62,6 +62,20 @@ namespace arterm
 		return pthread_main_np() != 0;
 	}
 
+	void on_main_sync( Work work ){
+		if( is_main_queue() ){
+			if( work )
+				work();
+			return;
+		}
+
+		dispatch_sync_f( dispatch_get_main_queue(), &work, []( void* context ){
+			auto* held = static_cast<Work*>( context );
+			if( *held )
+				( *held )();
+		} );
+	}
+
 	// -- Queue -----------------------------------------------------------------
 
 	Queue::Queue( std::string const& label )
