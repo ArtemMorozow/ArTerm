@@ -72,7 +72,36 @@ target_link_libraries(arterm_core
         "-framework CoreFoundation")
 
 # ---------------------------------------------------------------------------
-# Not yet migrated off Qt. Each block moves up into arterm_core as it lands.
+# The application: the AppKit layer in Objective-C++ on top of arterm_core.
+# ---------------------------------------------------------------------------
+add_executable(arterm MACOSX_BUNDLE
+    app/main.mm
+    app/app_delegate.h
+    app/app_delegate.mm
+    app/main_window_controller.h
+    app/main_window_controller.mm
+    app/host_list_controller.h
+    app/host_list_controller.mm)
+
+target_link_libraries(arterm PRIVATE
+    arterm_core
+    "-framework Cocoa")
+
+target_compile_options(arterm PRIVATE -fobjc-arc)
+
+set_target_properties(arterm PROPERTIES
+    OUTPUT_NAME "ArTerm"
+    MACOSX_BUNDLE_BUNDLE_NAME "ArTerm"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "app.arterm.ArTerm"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_COPYRIGHT "© ArTerm contributors"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/MacOSXBundleInfo.plist.in")
+
+install(TARGETS arterm BUNDLE DESTINATION .)
+
+# ---------------------------------------------------------------------------
+# Not yet migrated off Qt. Each block moves up as its AppKit replacement lands.
 # ---------------------------------------------------------------------------
 #   files/    file_list_model, local/remote_file_model, transfer_manager,
 #             file_mime_data, file_pane, transfer_panel, file_browser
@@ -83,6 +112,3 @@ target_link_libraries(arterm_core
 # The session/ facades are gone rather than pending: their whole job was
 # owning the Qt worker threads, and the sessions own their dispatch queues now,
 # so the AppKit layer talks to ShellSession/SftpSession directly.
-#
-# The application target returns with the AppKit layer; until then there is no
-# main() to link.
