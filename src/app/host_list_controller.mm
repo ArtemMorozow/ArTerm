@@ -3,6 +3,8 @@
 #include "core/log.hpp"
 #include "model/host_store.hpp"
 
+#include <utility>
+
 /// One row of the outline: either a group header or a host.
 @interface ArTermHostItem : NSObject
 @property( nonatomic ) NSString*                     title;
@@ -20,8 +22,14 @@
 @implementation ArTermHostListController{
 	arterm::model::HostStore _store;
 
-	NSOutlineView*             _outline;
-	NSArray<ArTermHostItem*>*  _groups;
+	std::function<void( arterm::ssh::HostProfile )> _on_connect;
+
+	NSOutlineView*            _outline;
+	NSArray<ArTermHostItem*>* _groups;
+}
+
+- (void)setConnectHandler:(std::function<void( arterm::ssh::HostProfile )>)handler{
+	_on_connect = std::move( handler );
 }
 
 - (void)loadView{
@@ -98,11 +106,12 @@
 
 - (void)connectToSelectedHost:(id)sender{
 	ArTermHostItem* item = [_outline itemAtRow:_outline.clickedRow];
-	if( item.profileId == nil )
+	if( item.profileId == nil || !_on_connect )
 		return;
 
-	// Placeholder until the session view lands: prove the wiring end to end.
-	arterm::log_info( "app", "connect requested for {}", item.profileId.UTF8String );
+	// with_secrets pulls the password/passphrase out of the keychain, so the
+	// session can try them before falling back to a prompt.
+	_on_connect( _store.with_secrets( item.profileId.UTF8String ) );
 }
 
 // -- NSOutlineViewDataSource ------------------------------------------------

@@ -81,7 +81,11 @@ add_executable(arterm MACOSX_BUNDLE
     app/main_window_controller.h
     app/main_window_controller.mm
     app/host_list_controller.h
-    app/host_list_controller.mm)
+    app/host_list_controller.mm
+    app/terminal_view.h
+    app/terminal_view.mm
+    app/session_view_controller.h
+    app/session_view_controller.mm)
 
 target_link_libraries(arterm PRIVATE
     arterm_core
