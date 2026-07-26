@@ -1,237 +1,266 @@
-#include "files/file_list_model.hpp"
 #include "model/host_store.hpp"
 
-#include <QStandardPaths>
-#include <QTemporaryDir>
-#include <QTest>
+#include "core/uuid.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 
 using namespace arterm;
+namespace fs = std::filesystem;
 
-class TestHostStore : public QObject
+namespace
 {
-	Q_OBJECT
 
-private Q_SLOTS:
-	void initTestCase();
+	/// A throwaway directory, deleted on scope exit. Keeps the tests away from
+	/// the developer's real host list.
+	class TemporaryDir
+	{
+	public:
+		TemporaryDir()
+			: _path( fs::temp_directory_path() / ( "arterm-test-" + generate_uuid() ) )
+		{
+			fs::create_directories( _path );
+		}
 
-	void add_assigns_an_id();
-	void update_replaces_in_place();
-	void remove_drops_the_profile();
-	void round_trips_through_disk();
-	void imports_from_ssh_config();
-	void import_skips_patterns_and_duplicates();
+		~TemporaryDir(){
+			std::error_code ignored;
+			fs::remove_all( _path, ignored );
+		}
 
-	void transfer_backend_survives_a_reload();
-	void auth_order_prefers_the_configured_method();
-	void permission_string_matches_ls_format();
-	void file_size_formatting();
+		[[nodiscard]] std::string file( std::string const& name ) const { return ( _path / name ).string(); }
 
-private:
-	QTemporaryDir _data_dir;
-};
+	private:
+		fs::path _path;
+	};
 
-void TestHostStore::initTestCase(){
-	QVERIFY( _data_dir.isValid() );
-	// Keep the tests away from the developer's real host list.
-	QStandardPaths::set_test_mode_enabled( true );
-}
+	void write_file( std::string const& path, std::string_view contents ){
+		std::ofstream out( path, std::ios::binary );
+		out << contents;
+	}
 
-void TestHostStore::add_assigns_an_id(){
+} // namespace
+
+TEST_CASE( "add assigns an id", "[hoststore]" ){
+	TemporaryDir     directory;
 	model::HostStore store;
+	store.set_file_path( directory.file( "hosts.json" ) );
 
 	ssh::HostProfile profile;
-	profile.hostname = QStringLiteral( "example.com" );
-	profile.username = QStringLiteral( "deploy" );
+	profile.hostname = "example.com";
+	profile.username = "deploy";
 
-	QString const id = store.add( profile );
+	std::string const id = store.add( profile );
 
-	QVERIFY( !id.isEmpty() );
-	QCOMPARE( store.count(), 1 );
-	QVERIFY( store.profile_by_id( id ).has_value() );
-	QCOMPARE( store.profile_by_id( id )->hostname, QStringLiteral( "example.com" ) );
+	CHECK( !id.empty() );
+	CHECK( store.count() == 1 );
+	REQUIRE( store.profile_by_id( id ).has_value() );
+	CHECK( store.profile_by_id( id )->hostname == "example.com" );
 }
 
-void TestHostStore::update_replaces_in_place(){
+TEST_CASE( "update replaces in place", "[hoststore]" ){
+	TemporaryDir     directory;
 	model::HostStore store;
+	store.set_file_path( directory.file( "hosts.json" ) );
 
 	ssh::HostProfile profile;
-	profile.hostname = QStringLiteral( "old.example.com" );
-	QString const id = store.add( profile );
+	profile.hostname     = "old.example.com";
+	std::string const id = store.add( profile );
 
 	ssh::HostProfile edited = *store.profile_by_id( id );
-	edited.hostname         = QStringLiteral( "new.example.com" );
+	edited.hostname         = "new.example.com";
 	edited.port             = 2222;
 	store.update( edited );
 
-	QCOMPARE( store.count(), 1 );
-	QCOMPARE( store.profile_by_id( id )->hostname, QStringLiteral( "new.example.com" ) );
-	QCOMPARE( store.profile_by_id( id )->port, quint16( 2222 ) );
+	CHECK( store.count() == 1 );
+	CHECK( store.profile_by_id( id )->hostname == "new.example.com" );
+	CHECK( store.profile_by_id( id )->port == 2222 );
 }
 
-void TestHostStore::remove_drops_the_profile(){
+TEST_CASE( "remove drops the profile", "[hoststore]" ){
+	TemporaryDir     directory;
 	model::HostStore store;
+	store.set_file_path( directory.file( "hosts.json" ) );
 
 	ssh::HostProfile profile;
-	profile.hostname = QStringLiteral( "gone.example.com" );
-	QString const id = store.add( profile );
+	profile.hostname     = "gone.example.com";
+	std::string const id = store.add( profile );
 
 	store.remove( id );
 
-	QCOMPARE( store.count(), 0 );
-	QVERIFY( !store.profile_by_id( id ).has_value() );
+	CHECK( store.count() == 0 );
+	CHECK( !store.profile_by_id( id ).has_value() );
 }
 
-void TestHostStore::round_trips_through_disk(){
-	QString id;
+TEST_CASE( "round trips through disk", "[hoststore]" ){
+	TemporaryDir directory;
+	std::string  id;
 
 	{
 		model::HostStore store;
+		store.set_file_path( directory.file( "hosts.json" ) );
 
 		ssh::HostProfile profile;
-		profile.label            = QStringLiteral( "Build server" );
-		profile.hostname         = QStringLiteral( "build.example.com" );
-		profile.username         = QStringLiteral( "ci" );
+		profile.label            = "Build server";
+		profile.hostname         = "build.example.com";
+		profile.username         = "ci";
 		profile.port             = 2202;
-		profile.group            = QStringLiteral( "Production" );
+		profile.group            = "Production";
 		profile.preferred_auth   = ssh::AuthMethod::PUBLIC_KEY;
-		profile.private_key_path = QStringLiteral( "/home/ci/.ssh/id_ed25519" );
+		profile.private_key_path = "/home/ci/.ssh/id_ed25519";
 		profile.compression      = true;
 		// A secret set here must not reach the JSON file.
-		profile.password = QStringLiteral( "hunter2" );
+		profile.password = "hunter2";
 
 		id = store.add( profile );
-		QVERIFY( store.save() );
+		REQUIRE( store.save() );
 	}
 
 	model::HostStore reloaded;
-	QVERIFY( reloaded.load() );
+	reloaded.set_file_path( directory.file( "hosts.json" ) );
+	REQUIRE( reloaded.load() );
 
 	auto const profile = reloaded.profile_by_id( id );
-	QVERIFY( profile.has_value() );
-	QCOMPARE( profile->label, QStringLiteral( "Build server" ) );
-	QCOMPARE( profile->port, quint16( 2202 ) );
-	QCOMPARE( profile->preferred_auth, ssh::AuthMethod::PUBLIC_KEY );
-	QVERIFY( profile->compression );
-	QVERIFY( profile->password.isEmpty() );
+	REQUIRE( profile.has_value() );
+	CHECK( profile->label == "Build server" );
+	CHECK( profile->port == 2202 );
+	CHECK( profile->preferred_auth == ssh::AuthMethod::PUBLIC_KEY );
+	CHECK( profile->compression );
+	CHECK( profile->password.empty() );
+
+	// The password went into the real keychain; leave nothing behind.
+	reloaded.remove( id );
 }
 
-void TestHostStore::imports_from_ssh_config(){
-	QTemporaryDir directory;
-	QVERIFY( directory.isValid() );
-
-	QString const config_path = directory.filePath( QStringLiteral( "config" ) );
-	QFile         config( config_path );
-	QVERIFY( config.open( QIODevice::WriteOnly | QIODevice::Text ) );
-	config.write( "# a comment\n"
-				  "Host build\n"
-				  "    HostName build.internal\n"
-				  "    User ci\n"
-				  "    Port 2222\n"
-				  "    IdentityFile ~/.ssh/build_key\n"
-				  "\n"
-				  "Host db\n"
-				  "    HostName db.internal\n"
-				  "    User postgres\n" );
-	config.close();
-
-	model::HostStore store;
-	int const        imported = store.import_from_ssh_config( config_path );
-
-	QCOMPARE( imported, 2 );
-
-	auto const profiles = store.profiles();
-	auto const build    = std::find_if( profiles.begin(), profiles.end(), []( ssh::HostProfile const& p ){
-        return p.hostname == QLatin1String( "build.internal" );
-    } );
-	QVERIFY( build != profiles.end() );
-	QCOMPARE( build->username, QStringLiteral( "ci" ) );
-	QCOMPARE( build->port, quint16( 2222 ) );
-	QCOMPARE( build->preferred_auth, ssh::AuthMethod::PUBLIC_KEY );
-}
-
-void TestHostStore::import_skips_patterns_and_duplicates(){
-	QTemporaryDir directory;
-	QVERIFY( directory.isValid() );
-
-	QString const config_path = directory.filePath( QStringLiteral( "config" ) );
-	QFile         config( config_path );
-	QVERIFY( config.open( QIODevice::WriteOnly | QIODevice::Text ) );
-	config.write( "Host *\n"
-				  "    ServerAliveInterval 60\n"
-				  "\n"
-				  "Host web\n"
-				  "    HostName web.internal\n"
-				  "    User www\n" );
-	config.close();
-
-	model::HostStore store;
-
-	QCOMPARE( store.import_from_ssh_config( config_path ), 1 );
-	// A second import of the same file must not duplicate anything.
-	QCOMPARE( store.import_from_ssh_config( config_path ), 0 );
-}
-
-void TestHostStore::transfer_backend_survives_a_reload(){
-	QString id;
+TEST_CASE( "the JSON file itself never contains a secret", "[hoststore]" ){
+	TemporaryDir directory;
+	std::string  id;
 
 	{
 		model::HostStore store;
+		store.set_file_path( directory.file( "hosts.json" ) );
 
 		ssh::HostProfile profile;
-		profile.hostname         = QStringLiteral( "scp-only.example.com" );
+		profile.hostname = "secret.example.com";
+		profile.password = "hunter2";
+		id               = store.add( profile );
+		REQUIRE( store.save() );
+	}
+
+	std::ifstream     file( directory.file( "hosts.json" ), std::ios::binary );
+	std::string const contents( ( std::istreambuf_iterator<char>( file ) ), std::istreambuf_iterator<char>() );
+	CHECK( contents.find( "hunter2" ) == std::string::npos );
+
+	model::HostStore cleanup;
+	cleanup.set_file_path( directory.file( "hosts.json" ) );
+	REQUIRE( cleanup.load() );
+	cleanup.remove( id );
+}
+
+TEST_CASE( "imports from ssh config", "[hoststore]" ){
+	TemporaryDir directory;
+
+	std::string const config_path = directory.file( "config" );
+	write_file( config_path, "# a comment\n"
+							 "Host build\n"
+							 "    HostName build.internal\n"
+							 "    User ci\n"
+							 "    Port 2222\n"
+							 "    IdentityFile ~/.ssh/build_key\n"
+							 "\n"
+							 "Host db\n"
+							 "    HostName db.internal\n"
+							 "    User postgres\n" );
+
+	model::HostStore store;
+	store.set_file_path( directory.file( "hosts.json" ) );
+	int const imported = store.import_from_ssh_config( config_path );
+
+	CHECK( imported == 2 );
+
+	auto const& profiles = store.profiles();
+	auto const  build =
+		std::ranges::find_if( profiles, []( ssh::HostProfile const& p ) { return p.hostname == "build.internal"; } );
+	REQUIRE( build != profiles.end() );
+	CHECK( build->username == "ci" );
+	CHECK( build->port == 2222 );
+	CHECK( build->preferred_auth == ssh::AuthMethod::PUBLIC_KEY );
+}
+
+TEST_CASE( "import skips patterns and duplicates", "[hoststore]" ){
+	TemporaryDir directory;
+
+	std::string const config_path = directory.file( "config" );
+	write_file( config_path, "Host *\n"
+							 "    ServerAliveInterval 60\n"
+							 "\n"
+							 "Host web\n"
+							 "    HostName web.internal\n"
+							 "    User www\n" );
+
+	model::HostStore store;
+	store.set_file_path( directory.file( "hosts.json" ) );
+
+	CHECK( store.import_from_ssh_config( config_path ) == 1 );
+	// A second import of the same file must not duplicate anything.
+	CHECK( store.import_from_ssh_config( config_path ) == 0 );
+}
+
+TEST_CASE( "the transfer backend survives a reload", "[hoststore]" ){
+	TemporaryDir directory;
+	std::string  id;
+
+	{
+		model::HostStore store;
+		store.set_file_path( directory.file( "hosts.json" ) );
+
+		ssh::HostProfile profile;
+		profile.hostname         = "scp-only.example.com";
 		profile.transfer_backend = ssh::TransferBackend::SCP;
 
 		id = store.add( profile );
-		QVERIFY( store.save() );
+		REQUIRE( store.save() );
 	}
 
 	model::HostStore reloaded;
-	QVERIFY( reloaded.load() );
-	QCOMPARE( reloaded.profile_by_id( id )->transfer_backend, ssh::TransferBackend::SCP );
+	reloaded.set_file_path( directory.file( "hosts.json" ) );
+	REQUIRE( reloaded.load() );
+	CHECK( reloaded.profile_by_id( id )->transfer_backend == ssh::TransferBackend::SCP );
 
 	// An older profile file has no such key and must default to SFTP rather
 	// than to whatever zero happens to mean.
 	ssh::HostProfile fresh;
-	QCOMPARE( fresh.transfer_backend, ssh::TransferBackend::SFTP );
+	CHECK( fresh.transfer_backend == ssh::TransferBackend::SFTP );
 }
 
-void TestHostStore::auth_order_prefers_the_configured_method(){
+TEST_CASE( "auth order prefers the configured method", "[hoststore]" ){
 	ssh::HostProfile profile;
 	profile.preferred_auth = ssh::AuthMethod::PASSWORD;
-	profile.password       = QStringLiteral( "secret" );
+	profile.password       = "secret";
 	profile.use_agent      = false;
 
 	auto const order = profile.auth_order();
 
-	QVERIFY( !order.isEmpty() );
-	QCOMPARE( order.first(), ssh::AuthMethod::PASSWORD );
+	REQUIRE( !order.empty() );
+	CHECK( order.front() == ssh::AuthMethod::PASSWORD );
 	// Without an agent or a key those methods must not be attempted at all.
-	QVERIFY( !order.contains( ssh::AuthMethod::AGENT ) );
-	QVERIFY( !order.contains( ssh::AuthMethod::PUBLIC_KEY ) );
+	CHECK( std::ranges::find( order, ssh::AuthMethod::AGENT ) == order.end() );
+	CHECK( std::ranges::find( order, ssh::AuthMethod::PUBLIC_KEY ) == order.end() );
 }
 
-void TestHostStore::permission_string_matches_ls_format(){
+TEST_CASE( "permission string matches ls format", "[hoststore]" ){
 	ssh::RemoteFileEntry entry;
 	entry.is_directory = true;
 	entry.permissions  = 0755;
-	QCOMPARE( entry.permission_string(), QStringLiteral( "drwxr-xr-x" ) );
+	CHECK( entry.permission_string() == "drwxr-xr-x" );
 
 	entry.is_directory = false;
 	entry.permissions  = 0644;
-	QCOMPARE( entry.permission_string(), QStringLiteral( "-rw-r--r--" ) );
+	CHECK( entry.permission_string() == "-rw-r--r--" );
 
 	entry.is_symlink  = true;
 	entry.permissions = 0777;
-	QCOMPARE( entry.permission_string(), QStringLiteral( "lrwxrwxrwx" ) );
+	CHECK( entry.permission_string() == "lrwxrwxrwx" );
 }
-
-void TestHostStore::file_size_formatting(){
-	QVERIFY( files::format_file_size( 512 ).contains( QStringLiteral( "512" ) ) );
-	QVERIFY( files::format_file_size( 2048 ).contains( QStringLiteral( "KB" ) ) );
-	QVERIFY( files::format_file_size( 5ull * 1024 * 1024 ).contains( QStringLiteral( "MB" ) ) );
-	QVERIFY( files::format_file_size( 3ull * 1024 * 1024 * 1024 ).contains( QStringLiteral( "GB" ) ) );
-}
-
-QTEST_MAIN( TestHostStore )
-
-#include "tst_hoststore.moc"

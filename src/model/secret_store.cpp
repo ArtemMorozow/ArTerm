@@ -1,135 +1,135 @@
 #include "model/secret_store.hpp"
 
-#include <QLoggingCategory>
-#include <QObject>
+#include "core/log.hpp"
 
-#ifdef Q_OS_MACOS
-	#include <Security/Security.h>
-#endif
-
-Q_LOGGING_CATEGORY( lc_secrets, "arterm.secrets" )
+#include <Security/Security.h>
 
 namespace arterm::model
 {
 	namespace
 	{
 
-// Only the Keychain implementation needs these; on other platforms the store
-// reports itself unavailable and every entry point is a stub.
-#ifdef Q_OS_MACOS
-
 		/// Keychain service name; the account is "<profile id>/<kind>" so a single
 		/// profile can hold both a password and a passphrase.
 		constexpr char SERVICE_NAME[] = "ArTerm";
 
-		QByteArray account_key( QString const& account, QString const& kind ){
-			return ( account + QLatin1Char( '/' ) + kind ).toUtf8();
+		std::string account_key( std::string const& account, std::string const& kind ){
+			return account + "/" + kind;
 		}
 
-#endif
+		/// Owns one CoreFoundation reference.
+		template <typename Ref_>
+		class CfRef
+		{
+		public:
+			CfRef() = default;
+			explicit CfRef( Ref_ ref ) noexcept
+				: _ref( ref )
+			{}
+
+			CfRef( CfRef const& )            = delete;
+			CfRef& operator=( CfRef const& ) = delete;
+
+			CfRef( CfRef&& other ) noexcept
+				: _ref( other._ref )
+			{
+				other._ref = nullptr;
+			}
+
+			~CfRef(){
+				if( _ref != nullptr )
+					CFRelease( _ref );
+			}
+
+			[[nodiscard]] Ref_ get() const noexcept { return _ref; }
+
+			/// For out-parameters: releases the old value and exposes the slot.
+			[[nodiscard]] Ref_* slot() noexcept{
+				if( _ref != nullptr ){
+					CFRelease( _ref );
+					_ref = nullptr;
+				}
+				return &_ref;
+			}
+
+		private:
+			Ref_ _ref{ nullptr };
+		};
+
+		CfRef<CFStringRef> cf_string( std::string const& text ){
+			return CfRef<CFStringRef>(
+				CFStringCreateWithBytes( kCFAllocatorDefault, reinterpret_cast<UInt8 const*>( text.data() ),
+										 static_cast<CFIndex>( text.size() ), kCFStringEncodingUTF8, false ) );
+		}
+
+		CfRef<CFDataRef> cf_data( std::string const& bytes ){
+			return CfRef<CFDataRef>( CFDataCreate( kCFAllocatorDefault, reinterpret_cast<UInt8 const*>( bytes.data() ),
+												   static_cast<CFIndex>( bytes.size() ) ) );
+		}
+
+		/// The lookup dictionary shared by every operation.
+		CfRef<CFMutableDictionaryRef> base_query( std::string const& key ){
+			CfRef<CFMutableDictionaryRef> query( CFDictionaryCreateMutable(
+				kCFAllocatorDefault, 4, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks ) );
+
+			auto const service = cf_string( SERVICE_NAME );
+			auto const account = cf_string( key );
+			CFDictionarySetValue( query.get(), kSecClass, kSecClassGenericPassword );
+			CFDictionarySetValue( query.get(), kSecAttrService, service.get() );
+			CFDictionarySetValue( query.get(), kSecAttrAccount, account.get() );
+			return query;
+		}
 
 	} // namespace
 
-	bool SecretStore::is_available(){
-#ifdef Q_OS_MACOS
-		return true;
-#else
-		return false;
-#endif
+	std::string SecretStore::backend_name(){
+		return "macOS Keychain";
 	}
 
-	QString SecretStore::backend_name(){
-#ifdef Q_OS_MACOS
-		return QObject::tr( "macOS Keychain" );
-#else
-		return QObject::tr( "none (secrets are not saved)" );
-#endif
-	}
+	bool SecretStore::store( std::string const& account, std::string const& kind, std::string const& secret ){
+		auto const query = base_query( account_key( account, kind ) );
+		auto const value = cf_data( secret );
 
-#ifdef Q_OS_MACOS
+		// Update in place first so repeated saves do not accumulate duplicates.
+		CfRef<CFMutableDictionaryRef> update( CFDictionaryCreateMutable(
+			kCFAllocatorDefault, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks ) );
+		CFDictionarySetValue( update.get(), kSecValueData, value.get() );
 
-	bool SecretStore::store( QString const& account, QString const& kind, QString const& secret ){
-		QByteArray const key   = account_key( account, kind );
-		QByteArray const value = secret.toUtf8();
-
-		// Replace any existing item rather than accumulating duplicates.
-		SecKeychainItemRef existing = nullptr;
-		OSStatus status = SecKeychainFindGenericPassword( nullptr, static_cast<UInt32>( sizeof( SERVICE_NAME ) - 1 ),
-														  SERVICE_NAME, static_cast<UInt32>( key.size() ),
-														  key.constData(), nullptr, nullptr, &existing );
-
-		if( status == errSecSuccess && existing != nullptr ){
-			status = SecKeychainItemModifyAttributesAndData( existing, nullptr, static_cast<UInt32>( value.size() ),
-															 value.constData() );
-			CFRelease( existing );
-		}
-		else{
-			status = SecKeychainAddGenericPassword( nullptr, static_cast<UInt32>( sizeof( SERVICE_NAME ) - 1 ),
-													SERVICE_NAME, static_cast<UInt32>( key.size() ), key.constData(),
-													static_cast<UInt32>( value.size() ), value.constData(), nullptr );
+		OSStatus status = SecItemUpdate( query.get(), update.get() );
+		if( status == errSecItemNotFound ){
+			CFDictionarySetValue( query.get(), kSecValueData, value.get() );
+			status = SecItemAdd( query.get(), nullptr );
 		}
 
 		if( status != errSecSuccess ){
-			qCWarning( lc_secrets ) << "cannot store secret for" << account << "status" << status;
+			log_warning( "secrets", "cannot store secret for {}: status {}", account, status );
 			return false;
 		}
 		return true;
 	}
 
-	std::optional<QString> SecretStore::retrieve( QString const& account, QString const& kind ){
-		QByteArray const key = account_key( account, kind );
+	std::optional<std::string> SecretStore::retrieve( std::string const& account, std::string const& kind ){
+		auto const query = base_query( account_key( account, kind ) );
+		CFDictionarySetValue( query.get(), kSecReturnData, kCFBooleanTrue );
+		CFDictionarySetValue( query.get(), kSecMatchLimit, kSecMatchLimitOne );
 
-		UInt32 length = 0;
-		void*  data   = nullptr;
-
-		OSStatus const status = SecKeychainFindGenericPassword(
-			nullptr, static_cast<UInt32>( sizeof( SERVICE_NAME ) - 1 ), SERVICE_NAME, static_cast<UInt32>( key.size() ),
-			key.constData(), &length, &data, nullptr );
-
-		if( status != errSecSuccess || data == nullptr )
+		CfRef<CFTypeRef> result;
+		if( SecItemCopyMatching( query.get(), result.slot() ) != errSecSuccess || result.get() == nullptr )
 			return std::nullopt;
 
-		QString const secret = QString::fromUtf8( static_cast<char const*>( data ), static_cast<qsizetype>( length ) );
-		SecKeychainItemFreeContent( nullptr, data );
-		return secret;
+		auto const data = static_cast<CFDataRef>( result.get() );
+		return std::string( reinterpret_cast<char const*>( CFDataGetBytePtr( data ) ),
+							static_cast<std::size_t>( CFDataGetLength( data ) ) );
 	}
 
-	bool SecretStore::remove( QString const& account, QString const& kind ){
-		QByteArray const key = account_key( account, kind );
-
-		SecKeychainItemRef item   = nullptr;
-		OSStatus const     status = SecKeychainFindGenericPassword(
-            nullptr, static_cast<UInt32>( sizeof( SERVICE_NAME ) - 1 ), SERVICE_NAME, static_cast<UInt32>( key.size() ),
-            key.constData(), nullptr, nullptr, &item );
-
-		if( status != errSecSuccess || item == nullptr )
-			return false;
-
-		OSStatus const deleted = SecKeychainItemDelete( item );
-		CFRelease( item );
-		return deleted == errSecSuccess;
+	bool SecretStore::remove( std::string const& account, std::string const& kind ){
+		auto const query = base_query( account_key( account, kind ) );
+		return SecItemDelete( query.get() ) == errSecSuccess;
 	}
 
-#else // Not macOS.
-
-	bool SecretStore::store( QString const& account, QString const&, QString const& ){
-		qCInfo( lc_secrets ) << "no secure store on this platform; not saving the secret for" << account;
-		return false;
-	}
-
-	std::optional<QString> SecretStore::retrieve( QString const&, QString const& ){
-		return std::nullopt;
-	}
-
-	bool SecretStore::remove( QString const&, QString const& ){
-		return false;
-	}
-
-#endif
-
-	void SecretStore::remove_all( QString const& account ){
-		remove( account, QLatin1String( PASSWORD ) );
-		remove( account, QLatin1String( PASSPHRASE ) );
+	void SecretStore::remove_all( std::string const& account ){
+		remove( account, PASSWORD );
+		remove( account, PASSPHRASE );
 	}
 
 } // namespace arterm::model

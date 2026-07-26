@@ -8,9 +8,9 @@ Written in C++23, built with clang and CMake. The interface is AppKit; libssh2
 is the only third-party dependency.
 
 > **Migration in progress.** ArTerm is being moved off Qt onto native AppKit.
-> `core/`, `terminal/` and `ssh/` are already pure C++23 and build without Qt;
-> `model/`, `files/` and `ui/` are still Qt and are not compiled yet. See the
-> source list at the bottom of `src/CMakeLists.txt`.
+> The entire engine - `core/`, `terminal/`, `ssh/` and `model/` - is pure C++23
+> and builds without Qt. What remains is the UI: `files/` and `ui/` are the old
+> Qt widgets, excluded from the build until the AppKit layer replaces them.
 
 ## What it does
 
@@ -76,9 +76,9 @@ ctest --test-dir build --output-on-failure
 
 The suite is Catch2 (fetched by CMake at configure time) and covers the
 parser, screen buffer, emulator, key encoding, character widths, colour scheme,
-base64 and the Signal primitive — the parts that are pure logic and therefore
-worth testing. Nothing in it touches the UI, so it needs no display. The host
-store test returns when `model/` comes off Qt.
+base64, JSON, the Signal primitive and the host store — the parts that are pure
+logic and therefore worth testing. Nothing in it touches the UI, so it needs no
+display.
 
 ### Other platforms
 

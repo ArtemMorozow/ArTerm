@@ -14,8 +14,12 @@ TEST_CASE( "RFC 4648 vectors round-trip", "[base64]" ){
 	};
 
 	static constexpr Case CASES[] = {
-		{ "", "" },           { "f", "Zg==" },          { "fo", "Zm8=" },
-		{ "foo", "Zm9v" },    { "foob", "Zm9vYg==" },   { "fooba", "Zm9vYmE=" },
+		{ "", "" },
+		{ "f", "Zg==" },
+		{ "fo", "Zm8=" },
+		{ "foo", "Zm9v" },
+		{ "foob", "Zm9vYg==" },
+		{ "fooba", "Zm9vYmE=" },
 		{ "foobar", "Zm9vYmFy" },
 	};
 
@@ -39,9 +43,9 @@ TEST_CASE( "every byte value survives a round-trip", "[base64]" ){
 }
 
 TEST_CASE( "malformed input is rejected rather than guessed at", "[base64]" ){
-	CHECK_FALSE( base64_decode( "abc" ).has_value() );      // Length not a multiple of four.
-	CHECK_FALSE( base64_decode( "a===" ).has_value() );     // Three padding bytes.
-	CHECK_FALSE( base64_decode( "!!!!" ).has_value() );     // Outside the alphabet.
-	CHECK_FALSE( base64_decode( "Zg=a" ).has_value() );     // Padding in the middle.
+	CHECK_FALSE( base64_decode( "abc" ).has_value() );       // Length not a multiple of four.
+	CHECK_FALSE( base64_decode( "a===" ).has_value() );      // Three padding bytes.
+	CHECK_FALSE( base64_decode( "!!!!" ).has_value() );      // Outside the alphabet.
+	CHECK_FALSE( base64_decode( "Zg=a" ).has_value() );      // Padding in the middle.
 	CHECK_FALSE( base64_decode( "Zm9v YmFy" ).has_value() ); // Whitespace is not skipped.
 }

@@ -16,6 +16,8 @@ include(Catch)
 add_executable(arterm_tests
     tst_base64.cpp
     tst_charwidth.cpp
+    tst_hoststore.cpp
+    tst_json.cpp
     tst_colorscheme.cpp
     tst_keyencoder.cpp
     tst_screen.cpp
@@ -26,5 +28,3 @@ add_executable(arterm_tests
 target_link_libraries(arterm_tests PRIVATE arterm_core Catch2::Catch2WithMain)
 
 catch_discover_tests(arterm_tests)
-
-# tst_hoststore waits on model/host_store coming off Qt.

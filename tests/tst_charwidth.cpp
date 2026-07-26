@@ -21,7 +21,7 @@ TEST_CASE( "CJK is double width", "[charwidth]" ){
 	CHECK( character_width( U'\u672c' ) == 2 );
 	CHECK( character_width( U'\ud55c' ) == 2 ); // Hangul syllable.
 	CHECK( character_width( U'\u3042' ) == 2 ); // Hiragana.
-	CHECK( character_width( 0xFF21 ) == 2 );     // Fullwidth A.
+	CHECK( character_width( 0xFF21 ) == 2 );    // Fullwidth A.
 }
 
 TEST_CASE( "emoji is double width", "[charwidth]" ){

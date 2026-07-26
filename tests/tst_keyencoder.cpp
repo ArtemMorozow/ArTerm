@@ -9,8 +9,8 @@ using namespace arterm::term;
 namespace
 {
 
-	std::string encode( Key key, KeyModifier modifiers = KeyModifier::NONE, std::string text = {},
-						char32_t base = 0, KeyEncoder::Options const& options = {} ){
+	std::string encode( Key key, KeyModifier modifiers = KeyModifier::NONE, std::string text = {}, char32_t base = 0,
+						KeyEncoder::Options const& options = {} ){
 		KeyEvent event;
 		event.key            = key;
 		event.modifiers      = modifiers;
@@ -23,7 +23,7 @@ namespace
 		std::size_t found = 0;
 		for( std::size_t at = haystack.find( needle ); at != std::string_view::npos;
 			 at             = haystack.find( needle, at + 1 ) )
-			++found;
+            ++found;
 		return found;
 	}
 
@@ -116,7 +116,9 @@ TEST_CASE( "bracketed paste cannot be escaped", "[keyencoder]" ){
 }
 
 TEST_CASE( "unbracketed paste strips controls", "[keyencoder]" ){
-	std::string const encoded = KeyEncoder::encode_paste( "a\033[31mb\x07" "c", false );
+	std::string const encoded = KeyEncoder::encode_paste( "a\033[31mb\x07"
+														  "c",
+														  false );
 
 	CHECK( encoded.find( '\033' ) == std::string::npos );
 	CHECK( encoded.find( '\x07' ) == std::string::npos );

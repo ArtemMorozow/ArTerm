@@ -19,6 +19,10 @@ add_library(arterm_core STATIC
     core/log.cpp
     core/paths.hpp
     core/paths.cpp
+    core/json.hpp
+    core/json.cpp
+    core/uuid.hpp
+    core/uuid.cpp
 
     terminal/cell.hpp
     terminal/char_width.hpp
@@ -50,7 +54,12 @@ add_library(arterm_core STATIC
     ssh/scp_transfer.hpp
     ssh/scp_transfer.cpp
     ssh/sftp_session.hpp
-    ssh/sftp_session.cpp)
+    ssh/sftp_session.cpp
+
+    model/secret_store.hpp
+    model/secret_store.cpp
+    model/host_store.hpp
+    model/host_store.cpp)
 
 target_include_directories(arterm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -58,12 +67,13 @@ target_link_libraries(arterm_core
     PUBLIC
         arterm::flags
         arterm::libssh2
-        Threads::Threads)
+        Threads::Threads
+        "-framework Security"
+        "-framework CoreFoundation")
 
 # ---------------------------------------------------------------------------
 # Not yet migrated off Qt. Each block moves up into arterm_core as it lands.
 # ---------------------------------------------------------------------------
-#   model/    host_store, secret_store
 #   files/    file_list_model, local/remote_file_model, transfer_manager,
 #             file_mime_data, file_pane, transfer_panel, file_browser
 #   ui/       theme, icons, host_sidebar, host_editor_dialog, host_key_dialog,

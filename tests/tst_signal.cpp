@@ -11,17 +11,17 @@ TEST_CASE( "every connected slot is called, in order", "[signal]" ){
 	Signal<int>      signal;
 	std::vector<int> seen;
 
-	signal.connect( [&seen]( int value ){ seen.push_back( value ); } );
-	signal.connect( [&seen]( int value ){ seen.push_back( value * 10 ); } );
+	signal.connect( [&seen]( int value ) { seen.push_back( value ); } );
+	signal.connect( [&seen]( int value ) { seen.push_back( value * 10 ); } );
 	signal( 3 );
 
 	CHECK( seen == std::vector<int>{ 3, 30 } );
 }
 
 TEST_CASE( "a disconnected slot stops firing", "[signal]" ){
-	Signal<>  signal;
-	int       calls = 0;
-	SlotId const id = signal.connect( [&calls]{ ++calls; } );
+	Signal<>     signal;
+	int          calls = 0;
+	SlotId const id    = signal.connect( [&calls] { ++calls; } );
 
 	signal();
 	signal.disconnect( id );
@@ -41,7 +41,7 @@ TEST_CASE( "a slot may disconnect itself while the signal is emitting", "[signal
         ++first;
         signal.disconnect( id );
     } );
-	signal.connect( [&second]{ ++second; } );
+	signal.connect( [&second] { ++second; } );
 
 	signal();
 	signal();
@@ -56,7 +56,7 @@ TEST_CASE( "slots connected during emission wait for the next one", "[signal]" )
 	Signal<> signal;
 	int      late = 0;
 
-	signal.connect( [&]{ signal.connect( [&late]{ ++late; } ); } );
+	signal.connect( [&] { signal.connect( [&late] { ++late; } ); } );
 
 	signal();
 	CHECK( late == 0 );
@@ -70,7 +70,7 @@ TEST_CASE( "ScopedConnection unsubscribes when it goes out of scope", "[signal]"
 
 	{
 		ScopedConnection<Signal<std::string const&>> connection(
-			signal, signal.connect( [&seen]( std::string const& text ){ seen = text; } ) );
+			signal, signal.connect( [&seen]( std::string const& text ) { seen = text; } ) );
 		signal( "inside" );
 		CHECK( seen == "inside" );
 	}

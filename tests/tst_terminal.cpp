@@ -114,7 +114,7 @@ TEST_CASE( "the alternate screen is separate", "[terminal]" ){
 TEST_CASE( "the title is extracted from OSC", "[terminal]" ){
 	Terminal                 terminal( 20, 5 );
 	std::vector<std::string> seen;
-	terminal.title_changed.connect( [&seen]( std::string const& title ){ seen.push_back( title ); } );
+	terminal.title_changed.connect( [&seen]( std::string const& title ) { seen.push_back( title ); } );
 
 	terminal.receive( "\033]0;build-01\007" );
 
@@ -155,7 +155,7 @@ TEST_CASE( "OSC 52 writes the clipboard, but never reads it", "[terminal]" ){
 TEST_CASE( "the device status report is answered", "[terminal]" ){
 	Terminal                 terminal( 20, 5 );
 	std::vector<std::string> replies;
-	terminal.reply.connect( [&replies]( std::string const& data ){ replies.push_back( data ); } );
+	terminal.reply.connect( [&replies]( std::string const& data ) { replies.push_back( data ); } );
 
 	terminal.receive( "\033[3;7H\033[6n" );
 
