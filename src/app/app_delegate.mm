@@ -35,6 +35,7 @@ namespace
 
 		NSMenuItem* file = item_with_submenu( @"File" );
 		[file.submenu addItem:action_item( @"New Host…", @selector( newHost: ), @"n" )];
+		[file.submenu addItem:action_item( @"Import Hosts from ~/.ssh/config", @selector( importHosts: ), @"" )];
 		[file.submenu addItem:NSMenuItem.separatorItem];
 		[file.submenu addItem:action_item( @"Close", @selector( performClose: ), @"w" )];
 		[bar addItem:file];

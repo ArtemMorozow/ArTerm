@@ -77,6 +77,16 @@ namespace
 	return self;
 }
 
+// Menu actions arrive here through the responder chain and route to the
+// sidebar, which owns the store.
+- (void)newHost:(id)sender{
+	[_hosts createHost];
+}
+
+- (void)importHosts:(id)sender{
+	[_hosts importFromSSHConfig];
+}
+
 - (void)openSessionWithProfile:(arterm::ssh::HostProfile)profile{
 	NSString* const title = @( profile.display_name().c_str() );
 

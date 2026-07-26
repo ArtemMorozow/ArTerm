@@ -13,4 +13,10 @@
 /// Fired on double-click with the profile including its keychain secrets.
 - (void)setConnectHandler:(std::function<void( arterm::ssh::HostProfile )>)handler;
 
+/// Opens the editor sheet for a new host.
+- (void)createHost;
+
+/// Imports from ~/.ssh/config and reports how many hosts were added.
+- (void)importFromSSHConfig;
+
 @end

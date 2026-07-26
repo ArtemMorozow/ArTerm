@@ -82,6 +82,8 @@ add_executable(arterm MACOSX_BUNDLE
     app/main_window_controller.mm
     app/host_list_controller.h
     app/host_list_controller.mm
+    app/host_editor_controller.h
+    app/host_editor_controller.mm
     app/terminal_view.h
     app/terminal_view.mm
     app/session_view_controller.h

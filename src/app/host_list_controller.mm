@@ -1,8 +1,11 @@
 #import "app/host_list_controller.h"
 
+#import "app/host_editor_controller.h"
+
 #include "core/log.hpp"
 #include "model/host_store.hpp"
 
+#include <optional>
 #include <utility>
 
 /// One row of the outline: either a group header or a host.
@@ -42,6 +45,13 @@
 	_outline.delegate        = self;
 	_outline.target          = self;
 	_outline.doubleAction    = @selector( connectToSelectedHost: );
+
+	NSMenu* context = [NSMenu new];
+	[context addItemWithTitle:@"Connect" action:@selector( connectToSelectedHost: ) keyEquivalent:@""].target = self;
+	[context addItemWithTitle:@"Edit Host…" action:@selector( editClickedHost: ) keyEquivalent:@""].target = self;
+	[context addItem:NSMenuItem.separatorItem];
+	[context addItemWithTitle:@"Delete Host" action:@selector( deleteClickedHost: ) keyEquivalent:@""].target = self;
+	_outline.menu = context;
 
 	NSTableColumn* column = [[NSTableColumn alloc] initWithIdentifier:@"host"];
 	column.editable       = NO;
@@ -104,14 +114,89 @@
 	[_outline expandItem:nil expandChildren:YES];
 }
 
+- (nullable NSString*)clickedProfileId{
+	NSInteger const row = _outline.clickedRow >= 0 ? _outline.clickedRow : _outline.selectedRow;
+	if( row < 0 )
+		return nil;
+	return ( (ArTermHostItem*)[_outline itemAtRow:row] ).profileId;
+}
+
 - (void)connectToSelectedHost:(id)sender{
-	ArTermHostItem* item = [_outline itemAtRow:_outline.clickedRow];
-	if( item.profileId == nil || !_on_connect )
+	NSString* profile_id = [self clickedProfileId];
+	if( profile_id == nil || !_on_connect )
 		return;
 
 	// with_secrets pulls the password/passphrase out of the keychain, so the
 	// session can try them before falling back to a prompt.
-	_on_connect( _store.with_secrets( item.profileId.UTF8String ) );
+	_on_connect( _store.with_secrets( profile_id.UTF8String ) );
+}
+
+// -- Editing ----------------------------------------------------------------
+
+- (void)presentEditorFor:(std::optional<arterm::ssh::HostProfile>)profile{
+	bool const is_new = !profile.has_value();
+
+	ArTermHostEditorController* editor =
+		[[ArTermHostEditorController alloc] initWithProfile:std::move( profile )];
+
+	__weak ArTermHostListController* weak_self = self;
+	[editor setCompletionHandler:[weak_self, is_new]( std::optional<arterm::ssh::HostProfile> result ){
+		ArTermHostListController* strong_self = weak_self;
+		if( strong_self == nil || !result )
+			return;
+
+		if( is_new )
+			strong_self->_store.add( std::move( *result ) );
+		else
+			strong_self->_store.update( *result );
+	}];
+
+	[self presentViewControllerAsSheet:editor];
+}
+
+- (void)createHost{
+	[self presentEditorFor:std::nullopt];
+}
+
+- (void)editClickedHost:(id)sender{
+	NSString* profile_id = [self clickedProfileId];
+	if( profile_id == nil )
+		return;
+
+	if( auto profile = _store.profile_by_id( profile_id.UTF8String ) )
+		[self presentEditorFor:std::move( *profile )];
+}
+
+- (void)deleteClickedHost:(id)sender{
+	NSString* profile_id = [self clickedProfileId];
+	if( profile_id == nil )
+		return;
+
+	auto const profile = _store.profile_by_id( profile_id.UTF8String );
+	if( !profile )
+		return;
+
+	NSAlert* alert        = [NSAlert new];
+	alert.messageText     = [NSString stringWithFormat:@"Delete “%s”?", profile->display_name().c_str()];
+	alert.informativeText = @"The profile and its keychain secrets are removed. This cannot be undone.";
+	alert.alertStyle      = NSAlertStyleWarning;
+	[alert addButtonWithTitle:@"Delete"];
+	[alert addButtonWithTitle:@"Cancel"];
+
+	if( [alert runModal] == NSAlertFirstButtonReturn )
+		_store.remove( profile_id.UTF8String );
+}
+
+- (void)importFromSSHConfig{
+	int const imported = _store.import_from_ssh_config();
+
+	NSAlert* alert    = [NSAlert new];
+	alert.messageText = imported > 0
+							? [NSString stringWithFormat:@"Imported %d host%s", imported, imported == 1 ? "" : "s"]
+							: @"Nothing to import";
+	alert.informativeText = imported > 0 ? @"The imported hosts are in the “Imported” group."
+										 : @"Every host in ~/.ssh/config is either already saved or a pattern.";
+	[alert runModal];
 }
 
 // -- NSOutlineViewDataSource ------------------------------------------------
