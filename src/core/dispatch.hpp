@@ -41,8 +41,14 @@ namespace arterm
 
 		void async( Work work ) const;
 
-		/// Blocks until `work` has run. Never call it from the queue itself.
+		/// Blocks until `work` has run. Never call it from the queue itself -
+		/// check `is_current` first when that is possible.
 		void sync( Work work ) const;
+
+		/// True when the caller is already executing on this queue, so `sync`
+		/// would deadlock. Lets a destructor reached from inside a queue block
+		/// tear down inline instead.
+		[[nodiscard]] bool is_current() const noexcept;
 
 		[[nodiscard]] dispatch_queue_t handle() const noexcept { return _queue; }
 

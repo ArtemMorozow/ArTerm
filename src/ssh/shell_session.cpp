@@ -36,9 +36,16 @@ namespace arterm::ssh
 	{}
 
 	ShellSession::~ShellSession(){
-		// Any block still queued holds an expired weak_ptr by now, so the only work
-		// left to serialise against is an in-flight source handler.
-		_queue.sync( [this] { teardown(); } );
+		// The last shared_ptr can be released from inside a queue block (a lambda's
+		// captured `self` going out of scope), which means the destructor runs on
+		// the session queue itself. `sync` onto the current queue would deadlock,
+		// so tear down inline in that case - the serial queue guarantees no other
+		// block is running concurrently. Otherwise serialise against in-flight
+		// source handlers with a sync.
+		if( _queue.is_current() )
+			teardown();
+		else
+			_queue.sync( [this] { teardown(); } );
 	}
 
 	void ShellSession::enqueue( void ( ShellSession::*work )() ){

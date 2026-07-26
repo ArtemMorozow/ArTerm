@@ -16,6 +16,7 @@ include(Catch)
 add_executable(arterm_tests
     tst_base64.cpp
     tst_charwidth.cpp
+    tst_dispatch.cpp
     tst_hoststore.cpp
     tst_json.cpp
     tst_colorscheme.cpp

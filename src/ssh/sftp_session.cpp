@@ -93,7 +93,12 @@ namespace arterm::ssh
 	{}
 
 	SftpSession::~SftpSession(){
-		_queue.sync( [this] { run_shutdown(); } );
+		// See ShellSession's destructor: the release can happen on the session
+		// queue, where a sync would deadlock.
+		if( _queue.is_current() )
+			run_shutdown();
+		else
+			_queue.sync( [this] { run_shutdown(); } );
 	}
 
 	void SftpSession::start(){

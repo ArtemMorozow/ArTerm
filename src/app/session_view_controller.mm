@@ -4,6 +4,7 @@
 
 #include "core/dispatch.hpp"
 #include "core/log.hpp"
+#include "model/secret_store.hpp"
 #include "ssh/session_interaction.hpp"
 #include "ssh/shell_session.hpp"
 
@@ -91,6 +92,32 @@ namespace
 - (void)viewDidLoad{
 	[super viewDidLoad];
 
+	[_terminal_view feed:"Connecting to " + _profile.endpoint() + "…\r\n"];
+
+	// Resolve the keychain secrets off the main thread. SecItemCopyMatching can
+	// block - and, for an ad-hoc-signed build, can raise an access-permission
+	// dialog - so doing it on the main thread would freeze the whole UI.
+	__weak ArTermSessionViewController* weak_self = self;
+	std::string const                   profile_id = _profile.id;
+
+	dispatch_async( dispatch_get_global_queue( QOS_CLASS_USER_INITIATED, 0 ), ^{
+		auto password   = model::SecretStore::retrieve( profile_id, model::SecretStore::PASSWORD );
+		auto passphrase = model::SecretStore::retrieve( profile_id, model::SecretStore::PASSPHRASE );
+
+		on_main( [weak_self, password, passphrase]{
+			ArTermSessionViewController* strong_self = weak_self;
+			if( strong_self == nil )
+				return;
+			if( password )
+				strong_self->_profile.password = *password;
+			if( passphrase )
+				strong_self->_profile.key_passphrase = *passphrase;
+			[strong_self startSession];
+		} );
+	} );
+}
+
+- (void)startSession{
 	_interaction = std::make_shared<ssh::SessionInteraction>();
 	_interaction->set_host_key_handler( confirm_host_key_alert );
 	_interaction->set_credential_handler( ask_credential_alert );
@@ -106,16 +133,19 @@ namespace
 		session->resize( columns, rows, width, height );
 	}];
 
+	// The view already has its real size, so open the PTY at the right geometry
+	// rather than the 80x24 default.
+	arterm::term::Terminal const& terminal = [_terminal_view terminal];
+	NSSize const                  size     = _terminal_view.frame.size;
+	_session->resize( terminal.columns(), terminal.rows(), static_cast<int>( size.width ),
+					  static_cast<int>( size.height ) );
+
 	_session->start();
 }
 
 - (void)viewDidAppear{
 	[super viewDidAppear];
 	[self.view.window makeFirstResponder:_terminal_view];
-
-	// The view got its real size before the session existed; push it now.
-	NSSize const size = _terminal_view.frame.size;
-	[_terminal_view setFrameSize:size];
 }
 
 - (void)wireSession{

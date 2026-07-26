@@ -114,6 +114,8 @@ namespace
 	CGFloat _cell_width;
 	CGFloat _cell_height;
 	CGFloat _baseline; ///< Distance from the cell top to the text baseline.
+	CGFloat _pad_x;    ///< Inset from the view edges to the character grid.
+	CGFloat _pad_y;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame{
@@ -123,13 +125,20 @@ namespace
 		_font      = [NSFont monospacedSystemFontOfSize:FONT_SIZE weight:NSFontWeightRegular];
 		_bold_font = [NSFont monospacedSystemFontOfSize:FONT_SIZE weight:NSFontWeightBold];
 
-		// The advancement of a representative glyph is the cell width; a fraction
-		// of leading keeps adjacent rows from touching.
-		_cell_width  = std::ceil( [@"M" sizeWithAttributes:@{ NSFontAttributeName : _font }].width );
-		_cell_height = std::ceil( _font.ascender - _font.descender + _font.leading ) + 1;
-		_baseline    = std::ceil( _font.ascender );
+		// A digit's advance is the cell width for a monospaced font. Line height
+		// gets a little extra leading so text breathes instead of looking like a
+		// 1980s VT; the glyph baseline is centred in that taller cell.
+		_cell_width          = std::ceil( [@"0" sizeWithAttributes:@{ NSFontAttributeName : _font }].width );
+		CGFloat const glyph  = _font.ascender - _font.descender;
+		_cell_height         = std::ceil( glyph * 1.25 );
+		_baseline            = std::round( _font.ascender + ( _cell_height - glyph ) / 2.0 );
 
-		self.wantsLayer = YES;
+		// Breathing room around the grid, the way every modern terminal has it.
+		_pad_x = 8;
+		_pad_y = 6;
+
+		self.wantsLayer            = YES;
+		self.layer.backgroundColor = ns_color( _scheme.background() ).CGColor;
 	}
 	return self;
 }
@@ -160,8 +169,8 @@ namespace
 - (void)setFrameSize:(NSSize)size{
 	[super setFrameSize:size];
 
-	int const columns = std::max( 2, static_cast<int>( size.width / _cell_width ) );
-	int const rows    = std::max( 2, static_cast<int>( size.height / _cell_height ) );
+	int const columns = std::max( 2, static_cast<int>( ( size.width - 2 * _pad_x ) / _cell_width ) );
+	int const rows    = std::max( 2, static_cast<int>( ( size.height - 2 * _pad_y ) / _cell_height ) );
 
 	if( columns == _terminal->columns() && rows == _terminal->rows() )
 		return;
@@ -175,13 +184,19 @@ namespace
 // -- Rendering --------------------------------------------------------------
 
 - (void)drawRect:(NSRect)dirty{
+	CGContextRef context = NSGraphicsContext.currentContext.CGContext;
+	CGContextSetShouldAntialias( context, true );
+	CGContextSetShouldSmoothFonts( context, true );
+
 	[ns_color( _scheme.background() ) setFill];
 	NSRectFill( dirty );
 
 	Screen const& screen = _terminal->screen();
 
-	int const first_row = std::clamp( static_cast<int>( NSMinY( dirty ) / _cell_height ), 0, screen.rows() - 1 );
-	int const last_row  = std::clamp( static_cast<int>( NSMaxY( dirty ) / _cell_height ), 0, screen.rows() - 1 );
+	int const first_row =
+		std::clamp( static_cast<int>( ( NSMinY( dirty ) - _pad_y ) / _cell_height ), 0, screen.rows() - 1 );
+	int const last_row =
+		std::clamp( static_cast<int>( ( NSMaxY( dirty ) - _pad_y ) / _cell_height ), 0, screen.rows() - 1 );
 
 	for( int row = first_row; row <= last_row; ++row )
 		[self drawRow:row];
@@ -192,7 +207,7 @@ namespace
 - (void)drawRow:(int)row{
 	Screen const& screen = _terminal->screen();
 	Line const&   line   = screen.line( row );
-	CGFloat const top    = row * _cell_height;
+	CGFloat const top    = _pad_y + row * _cell_height;
 
 	bool const reverse_video = _terminal->modes().reverse_video;
 
@@ -221,7 +236,8 @@ namespace
 
 		if( background != _scheme.background() ){
 			[ns_color( background ) setFill];
-			NSRectFill( NSMakeRect( column * _cell_width, top, ( run_end - column ) * _cell_width, _cell_height ) );
+			NSRectFill(
+				NSMakeRect( _pad_x + column * _cell_width, top, ( run_end - column ) * _cell_width, _cell_height ) );
 		}
 		column = run_end;
 	}
@@ -261,7 +277,7 @@ namespace
 
 	// CoreText draws in an unflipped space; flip back around this row's baseline.
 	CGContextSetTextMatrix( context, CGAffineTransformIdentity );
-	CGContextTranslateCTM( context, 0, top + _baseline );
+	CGContextTranslateCTM( context, _pad_x, top + _baseline );
 	CGContextScaleCTM( context, 1, -1 );
 
 	CTLineRef ct_line = CTLineCreateWithAttributedString( (__bridge CFAttributedStringRef)text );
@@ -277,8 +293,8 @@ namespace
 		return;
 
 	CursorState const& cursor = _terminal->screen().cursor();
-	NSRect const       rect   = NSMakeRect( cursor.column * _cell_width, cursor.row * _cell_height, _cell_width,
-											_cell_height );
+	NSRect const rect = NSMakeRect( _pad_x + cursor.column * _cell_width, _pad_y + cursor.row * _cell_height,
+									_cell_width, _cell_height );
 
 	if( self.window.firstResponder == self ){
 		[ns_color( _scheme.cursor() ) setFill];

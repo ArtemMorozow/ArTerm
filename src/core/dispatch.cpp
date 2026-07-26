@@ -78,9 +78,22 @@ namespace arterm
 
 	// -- Queue -----------------------------------------------------------------
 
+	namespace
+	{
+
+		/// A shared, unique address used as the key for the per-queue "specific"
+		/// value. Every Queue stores its own handle under this key, so a lookup on
+		/// the current queue reveals which Queue is running it.
+		char const QUEUE_KEY = 0;
+
+	} // namespace
+
 	Queue::Queue( std::string const& label )
 		: _queue( dispatch_queue_create( label.c_str(), DISPATCH_QUEUE_SERIAL ) )
-	{}
+	{
+		if( _queue != nullptr )
+			dispatch_queue_set_specific( _queue, &QUEUE_KEY, _queue, nullptr );
+	}
 
 	Queue::~Queue(){
 		if( _queue != nullptr )
@@ -110,6 +123,10 @@ namespace arterm
 			if( *held )
 				( *held )();
 		} );
+	}
+
+	bool Queue::is_current() const noexcept{
+		return _queue != nullptr && dispatch_get_specific( &QUEUE_KEY ) == _queue;
 	}
 
 	// -- ReadSource ------------------------------------------------------------

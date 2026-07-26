@@ -126,9 +126,10 @@
 	if( profile_id == nil || !_on_connect )
 		return;
 
-	// with_secrets pulls the password/passphrase out of the keychain, so the
-	// session can try them before falling back to a prompt.
-	_on_connect( _store.with_secrets( profile_id.UTF8String ) );
+	// Pass the profile without secrets: the session resolves those from the
+	// keychain on a background thread, keeping keychain access off the main one.
+	if( auto profile = _store.profile_by_id( profile_id.UTF8String ) )
+		_on_connect( std::move( *profile ) );
 }
 
 // -- Editing ----------------------------------------------------------------
