@@ -58,9 +58,6 @@ namespace
 		_close.bezelStyle = NSBezelStyleShadowlessSquare;
 		_close.bordered   = NO;
 		_close.toolTip    = @"Close tab";
-		// The close box only appears on hover or on the active tab, the way every
-		// browser does it, so an inactive strip stays quiet.
-		_close.alphaValue = 0;
 
 		for( NSView* view in @[ _icon, _spinner, _label, _close ] ){
 			view.translatesAutoresizingMaskIntoConstraints = NO;
@@ -107,8 +104,10 @@ namespace
 				  : ( _hovered ? [NSColor.controlBackgroundColor colorWithAlphaComponent:0.5].CGColor
 							   : NSColor.clearColor.CGColor );
 
-	_label.textColor  = _selected ? NSColor.labelColor : NSColor.secondaryLabelColor;
-	_close.alphaValue = ( _selected || _hovered ) ? 1 : 0;
+	_label.textColor = _selected ? NSColor.labelColor : NSColor.secondaryLabelColor;
+	// Always visible: an inactive tab that only reveals its close box on hover
+	// leaves no way to shut it for anyone who does not know to hover.
+	_close.contentTintColor = ( _selected || _hovered ) ? NSColor.labelColor : NSColor.tertiaryLabelColor;
 }
 
 - (void)updateTrackingAreas{
@@ -152,19 +151,34 @@ namespace
 
 @implementation ArTermTabBarView{
 	NSScrollView* _scroll;
-	NSView*       _strip;
+	NSStackView*  _strip;
 	NSButton*     _add;
-
-	NSArray<ArTermTabDescriptor*>* _tabs;
-	NSInteger                      _selected;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame{
 	if( ( self = [super initWithFrame:frame] ) ){
+		// Off before the height constraint below is added: while the autoresizing
+		// mask is still being translated, the zero frame it comes from generates a
+		// height-0 constraint that conflicts with ours, and the one Auto Layout
+		// breaks to resolve it can be ours - which collapses the bar to nothing.
+		self.translatesAutoresizingMaskIntoConstraints = NO;
+
 		self.wantsLayer            = YES;
 		self.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
 
-		_strip = [NSView new];
+		// A stack view rather than frames computed by hand: the first attempt did
+		// the arithmetic in -layout, which ran once while the bounds were still
+		// zero, bailed out, and was never asked again - so the strip stayed empty
+		// and the bar looked like it had vanished.
+		_strip = [NSStackView new];
+		// The document view of a scroll view is positioned by constraints only
+		// once its autoresizing mask stops being translated; without this the
+		// stack keeps the zero frame it was created with.
+		_strip.translatesAutoresizingMaskIntoConstraints = NO;
+		_strip.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+		_strip.spacing     = 2;
+		_strip.alignment   = NSLayoutAttributeCenterY;
+		_strip.detachesHiddenViews = NO;
 
 		_scroll                       = [NSScrollView new];
 		_scroll.documentView          = _strip;
@@ -195,49 +209,38 @@ namespace
 			[_add.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
 			[_add.widthAnchor constraintEqualToConstant:ADD_WIDTH],
 			[_add.heightAnchor constraintEqualToConstant:22],
+
+			// The strip is as tall as the visible area and grows rightwards, which
+			// is what makes it scroll once the tabs stop fitting.
+			[_strip.leadingAnchor constraintEqualToAnchor:_scroll.contentView.leadingAnchor],
+			[_strip.topAnchor constraintEqualToAnchor:_scroll.contentView.topAnchor],
+			[_strip.heightAnchor constraintEqualToAnchor:_scroll.contentView.heightAnchor],
 		]];
 	}
 	return self;
 }
 
 - (void)setTabs:(NSArray<ArTermTabDescriptor*>*)tabs selectedIndex:(NSInteger)selected{
-	_tabs     = [tabs copy];
-	_selected = selected;
-
-	// The items are positioned by hand from the scroll view's bounds, which are
-	// only meaningful once the constraints have run - so the work happens in
-	// -layout rather than here, where the bounds can still be zero.
-	self.needsLayout = YES;
-}
-
-- (void)layout{
-	[super layout];
-
-	for( NSView* view in [_strip.subviews copy] )
+	for( NSView* view in [_strip.arrangedSubviews copy] ){
+		[_strip removeArrangedSubview:view];
 		[view removeFromSuperview];
-
-	CGFloat const height    = NSHeight( _scroll.bounds );
-	CGFloat const available = NSWidth( _scroll.bounds );
-	if( height <= 0 )
-		return;
-
-	// Tabs share the available width down to a floor, past which the strip
-	// scrolls rather than shrinking them into illegibility.
-	CGFloat const width =
-		_tabs.count == 0 ? TAB_MIN : std::clamp( available / static_cast<CGFloat>( _tabs.count ), TAB_MIN, TAB_MAX );
-
-	CGFloat x = 0;
-	for( NSUInteger i = 0; i < _tabs.count; ++i ){
-		ArTermTabItemView* item = [[ArTermTabItemView alloc] initWithDescriptor:_tabs[i]];
-		item.index              = static_cast<NSInteger>( i );
-		item.bar                = self;
-		item.frame              = NSMakeRect( x, 0, width - 2, height );
-		item.selected           = static_cast<NSInteger>( i ) == _selected;
-		[_strip addSubview:item];
-		x += width;
 	}
 
-	_strip.frame = NSMakeRect( 0, 0, std::max( x, available ), height );
+	for( NSUInteger i = 0; i < tabs.count; ++i ){
+		ArTermTabItemView* item = [[ArTermTabItemView alloc] initWithDescriptor:tabs[i]];
+		item.index              = static_cast<NSInteger>( i );
+		item.bar                = self;
+		item.selected           = static_cast<NSInteger>( i ) == selected;
+
+		item.translatesAutoresizingMaskIntoConstraints = NO;
+		[_strip addArrangedSubview:item];
+
+		// A floor and a ceiling: tabs share the width but never shrink to
+		// illegibility - past that the strip scrolls instead.
+		[item.widthAnchor constraintGreaterThanOrEqualToConstant:TAB_MIN].active = YES;
+		[item.widthAnchor constraintLessThanOrEqualToConstant:TAB_MAX].active    = YES;
+		[item.heightAnchor constraintEqualToAnchor:_strip.heightAnchor].active   = YES;
+	}
 }
 
 - (void)addClicked:(id)sender{

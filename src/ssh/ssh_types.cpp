@@ -47,10 +47,13 @@ namespace arterm::ssh
 			push( AuthMethod::AGENT );
 		if( !private_key_path.empty() )
 			push( AuthMethod::PUBLIC_KEY );
-		if( !password.empty() ){
-			push( AuthMethod::PASSWORD );
-			push( AuthMethod::KEYBOARD_INTERACTIVE );
-		}
+
+		// The interactive methods come last whether or not a password is stored:
+		// one that is not stored can still be asked for, which is what ssh does.
+		// Gating these on a saved password meant a host whose key the agent does
+		// not hold could not be reached at all.
+		push( AuthMethod::PASSWORD );
+		push( AuthMethod::KEYBOARD_INTERACTIVE );
 
 		// Drop the preferred method again if the profile cannot actually satisfy it,
 		// otherwise we waste a round trip on every connect.

@@ -9,6 +9,16 @@
 namespace
 {
 
+	NSView* find_view_of_class( NSView* root, NSString* name ){
+		if( [NSStringFromClass( root.class ) isEqualToString:name] )
+			return root;
+		for( NSView* child in root.subviews ){
+			if( NSView* found = find_view_of_class( child, name ) )
+				return found;
+		}
+		return nil;
+	}
+
 	struct Case
 	{
 		char const* name;
@@ -136,9 +146,29 @@ bool write_window_probe( NSString* directory ){
 	NSWindow*                   window     = controller.window;
 	[window setFrame:NSMakeRect( 0, 0, 1100, 700 ) display:YES];
 
+	// A session tab as well as the start page, so the bar is captured in the
+	// state it has once something is connected - which is where the close box
+	// was reported missing.
+	arterm::ssh::HostProfile probe_profile;
+	probe_profile.label    = "probe-host";
+	probe_profile.hostname = "0.0.0.0"; // Fails fast; the tab is what matters.
+	probe_profile.username = "probe";
+	[controller openSessionWithProfile:probe_profile];
+
 	// Give the view tree a pass of layout before it is captured.
 	[window.contentView layoutSubtreeIfNeeded];
 	[window displayIfNeeded];
+
+	// The tab bar on its own as well: a layer-backed sibling can confuse
+	// cacheDisplayInRect, so capturing it separately tells a real layout fault
+	// apart from a compositing artefact of the capture itself.
+	if( NSView* strip_view = find_view_of_class( window.contentView, @"ArTermTabBarView" ) ){
+		NSBitmapImageRep* strip = [strip_view bitmapImageRepForCachingDisplayInRect:strip_view.bounds];
+		[strip_view cacheDisplayInRect:strip_view.bounds toBitmapImageRep:strip];
+		[[strip representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+			writeToFile:[directory stringByAppendingPathComponent:@"tabbar.png"]
+			 atomically:YES];
+	}
 
 	NSView*           view   = window.contentView;
 	NSBitmapImageRep* bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];

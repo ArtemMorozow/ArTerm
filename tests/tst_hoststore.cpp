@@ -250,6 +250,35 @@ TEST_CASE( "auth order prefers the configured method", "[hoststore]" ){
 	CHECK( std::ranges::find( order, ssh::AuthMethod::PUBLIC_KEY ) == order.end() );
 }
 
+TEST_CASE( "the interactive methods are always available as a fallback", "[hoststore]" ){
+	// A host that only offers an agent key: when the agent turns out not to hold
+	// one, there has to be something left to try, or the connection is dead with
+	// no way for the user to answer a prompt.
+	ssh::HostProfile profile;
+	profile.preferred_auth = ssh::AuthMethod::AGENT;
+	profile.use_agent      = true;
+
+	auto const order = profile.auth_order();
+
+	REQUIRE( order.front() == ssh::AuthMethod::AGENT );
+	CHECK( std::ranges::find( order, ssh::AuthMethod::PASSWORD ) != order.end() );
+	CHECK( std::ranges::find( order, ssh::AuthMethod::KEYBOARD_INTERACTIVE ) != order.end() );
+	// The agent is still tried first; the prompt is a last resort.
+	CHECK( std::ranges::find( order, ssh::AuthMethod::PASSWORD ) > order.begin() );
+}
+
+TEST_CASE( "a method the profile cannot satisfy is not attempted", "[hoststore]" ){
+	ssh::HostProfile profile;
+	profile.use_agent        = false;
+	profile.private_key_path = "";
+
+	auto const order = profile.auth_order();
+
+	CHECK( std::ranges::find( order, ssh::AuthMethod::AGENT ) == order.end() );
+	CHECK( std::ranges::find( order, ssh::AuthMethod::PUBLIC_KEY ) == order.end() );
+	CHECK_FALSE( order.empty() );
+}
+
 TEST_CASE( "permission string matches ls format", "[hoststore]" ){
 	ssh::RemoteFileEntry entry;
 	entry.is_directory = true;

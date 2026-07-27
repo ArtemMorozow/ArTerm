@@ -20,7 +20,9 @@ using namespace arterm::term;
 namespace
 {
 
-	constexpr CGFloat FONT_SIZE = 13.0;
+	constexpr CGFloat FONT_SIZE     = 13.0;
+	constexpr CGFloat FONT_SIZE_MIN = 8.0;
+	constexpr CGFloat FONT_SIZE_MAX = 32.0;
 
 	/// +scrollerWidth has been deprecated since 10.7 in favour of the
 	/// size/style form.
@@ -122,6 +124,8 @@ namespace
 	BOOL      _dragging;
 
 	NSScroller* _scroller;
+
+	CGFloat _font_size;
 }
 
 - (void)setForcesFocusedAppearance:(BOOL)forced{
@@ -138,16 +142,8 @@ namespace
 	if( ( self = [super initWithFrame:frame] ) ){
 		_terminal = std::make_unique<Terminal>( 80, 24 );
 
-		_font      = [NSFont monospacedSystemFontOfSize:FONT_SIZE weight:NSFontWeightRegular];
-		_bold_font = [NSFont monospacedSystemFontOfSize:FONT_SIZE weight:NSFontWeightBold];
-
-		// A digit's advance is the cell width for a monospaced font. Line height
-		// gets a little extra leading so text breathes instead of looking like a
-		// 1980s VT; the glyph baseline is centred in that taller cell.
-		_cell_width          = std::ceil( [@"0" sizeWithAttributes:@{ NSFontAttributeName : _font }].width );
-		CGFloat const glyph  = _font.ascender - _font.descender;
-		_cell_height         = std::ceil( glyph * 1.25 );
-		_baseline            = std::round( _font.ascender + ( _cell_height - glyph ) / 2.0 );
+		_font_size = FONT_SIZE;
+		[self rebuildFontMetrics];
 
 		// Breathing room around the grid, the way every modern terminal has it.
 		_pad_x = 8;
@@ -166,6 +162,62 @@ namespace
 		self.layer.backgroundColor = ns_color( _scheme.background() ).CGColor;
 	}
 	return self;
+}
+
+/// Recomputes the font and the cell geometry derived from it.
+- (void)rebuildFontMetrics{
+	_font      = [NSFont monospacedSystemFontOfSize:_font_size weight:NSFontWeightRegular];
+	_bold_font = [NSFont monospacedSystemFontOfSize:_font_size weight:NSFontWeightBold];
+
+	// A digit's advance is the cell width for a monospaced font. Line height
+	// gets a little extra leading so text breathes instead of looking like a
+	// 1980s VT; the glyph baseline is centred in that taller cell.
+	_cell_width         = std::ceil( [@"0" sizeWithAttributes:@{ NSFontAttributeName : _font }].width );
+	CGFloat const glyph = _font.ascender - _font.descender;
+	_cell_height        = std::ceil( glyph * 1.25 );
+	_baseline           = std::round( _font.ascender + ( _cell_height - glyph ) / 2.0 );
+}
+
+/// Applies a new size and reflows the grid, since a different cell size means
+/// a different number of rows and columns fit.
+- (void)setFontSize:(CGFloat)size{
+	CGFloat const wanted = std::clamp( size, FONT_SIZE_MIN, FONT_SIZE_MAX );
+	if( wanted == _font_size )
+		return;
+
+	_font_size = wanted;
+	[self rebuildFontMetrics];
+	[self reflowForCurrentSize];
+	self.needsDisplay = YES;
+}
+
+- (void)increaseFontSize:(id)sender{
+	[self setFontSize:_font_size + 1];
+}
+
+- (void)decreaseFontSize:(id)sender{
+	[self setFontSize:_font_size - 1];
+}
+
+- (void)resetFontSize:(id)sender{
+	[self setFontSize:FONT_SIZE];
+}
+
+/// Recomputes the grid for the view's current pixel size and tells the host.
+- (void)reflowForCurrentSize{
+	NSSize const size = self.frame.size;
+
+	CGFloat const scroller_width = overlay_scroller_width();
+	int const     columns =
+		std::max( 2, static_cast<int>( ( size.width - 2 * _pad_x - scroller_width ) / _cell_width ) );
+	int const rows = std::max( 2, static_cast<int>( ( size.height - 2 * _pad_y ) / _cell_height ) );
+
+	if( columns == _terminal->columns() && rows == _terminal->rows() )
+		return;
+
+	_terminal->resize( columns, rows );
+	if( _on_resize )
+		_on_resize( columns, rows, static_cast<int>( size.width ), static_cast<int>( size.height ) );
 }
 
 - (arterm::term::Terminal&)terminal{
@@ -297,16 +349,7 @@ namespace
 	CGFloat const scroller_width = overlay_scroller_width();
 	_scroller.frame = NSMakeRect( size.width - scroller_width, 0, scroller_width, size.height );
 
-	int const columns =
-		std::max( 2, static_cast<int>( ( size.width - 2 * _pad_x - scroller_width ) / _cell_width ) );
-	int const rows    = std::max( 2, static_cast<int>( ( size.height - 2 * _pad_y ) / _cell_height ) );
-
-	if( columns == _terminal->columns() && rows == _terminal->rows() )
-		return;
-
-	_terminal->resize( columns, rows );
-	if( _on_resize )
-		_on_resize( columns, rows, static_cast<int>( size.width ), static_cast<int>( size.height ) );
+	[self reflowForCurrentSize];
 	self.needsDisplay = YES;
 }
 

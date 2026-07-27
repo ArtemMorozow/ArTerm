@@ -55,6 +55,18 @@ namespace
 		[edit.submenu addItem:action_item( @"Select All", @selector( selectAll: ), @"a" )];
 		[bar addItem:edit];
 
+		NSMenuItem* view = item_with_submenu( @"View" );
+		[view.submenu addItem:action_item( @"Bigger Text", @selector( increaseFontSize: ), @"+" )];
+		// Cmd+= is what an unshifted "+" key actually produces, so both are bound
+		// or the shortcut only works with Shift held.
+		NSMenuItem* bigger_alias = action_item( @"Bigger Text", @selector( increaseFontSize: ), @"=" );
+		bigger_alias.hidden      = YES;
+		bigger_alias.alternate   = NO;
+		[view.submenu addItem:bigger_alias];
+		[view.submenu addItem:action_item( @"Smaller Text", @selector( decreaseFontSize: ), @"-" )];
+		[view.submenu addItem:action_item( @"Actual Size", @selector( resetFontSize: ), @"0" )];
+		[bar addItem:view];
+
 		NSMenuItem* window        = item_with_submenu( @"Window" );
 		[window.submenu addItem:action_item( @"Minimize", @selector( performMiniaturize: ), @"m" )];
 		[window.submenu addItem:action_item( @"Zoom", @selector( performZoom: ), @"" )];
