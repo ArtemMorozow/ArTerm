@@ -24,6 +24,8 @@ add_library(arterm_core STATIC
     core/uuid.hpp
     core/uuid.cpp
 
+    terminal/box_drawing.hpp
+    terminal/box_drawing.cpp
     terminal/cell.hpp
     terminal/char_width.hpp
     terminal/char_width.cpp
@@ -86,6 +88,8 @@ add_executable(arterm MACOSX_BUNDLE
     app/host_editor_controller.mm
     app/terminal_view.h
     app/terminal_view.mm
+    app/render_probe.h
+    app/render_probe.mm
     app/session_view_controller.h
     app/session_view_controller.mm)
 

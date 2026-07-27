@@ -15,6 +15,7 @@ include(Catch)
 # milliseconds, so there is nothing to gain from splitting them up.
 add_executable(arterm_tests
     tst_base64.cpp
+    tst_boxdrawing.cpp
     tst_charwidth.cpp
     tst_dispatch.cpp
     tst_hoststore.cpp

@@ -3,6 +3,7 @@
 #include <utility>
 
 #import "app/host_list_controller.h"
+#import "app/terminal_view.h"
 #import "app/session_view_controller.h"
 
 namespace

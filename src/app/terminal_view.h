@@ -26,4 +26,8 @@
 /// Feed bytes received from the host. Main queue only.
 - (void)feed:(std::string const&)data;
 
+/// Paints as though focused even without a window. Only the render probe uses
+/// this; a real view follows its first-responder state.
+- (void)setForcesFocusedAppearance:(BOOL)forced;
+
 @end

@@ -75,6 +75,7 @@ namespace
 	_main_window = [ArTermMainWindowController new];
 	[_main_window showWindow:nil];
 	[NSApp activateIgnoringOtherApps:YES];
+
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender{

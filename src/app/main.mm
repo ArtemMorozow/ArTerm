@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 
 #import "app/app_delegate.h"
+#import "app/render_probe.h"
 
 #include "core/log.hpp"
 
@@ -13,6 +14,13 @@ int main( int argc, char* argv[] ){
 	}
 
 	@autoreleasepool{
+		// The render probe writes a PNG of the terminal view and exits; it must
+		// run before the app takes over the main loop.
+		if( NSString* path = NSProcessInfo.processInfo.environment[@"ARTERM_RENDER_PROBE"] ){
+			[NSApplication sharedApplication]; // AppKit needs waking before it draws.
+			return arterm_write_render_probe( path ) ? 0 : 1;
+		}
+
 		NSApplication*     application = NSApplication.sharedApplication;
 		ArTermAppDelegate* delegate    = [ArTermAppDelegate new];
 

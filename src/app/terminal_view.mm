@@ -1,6 +1,7 @@
 #import "app/terminal_view.h"
 
 #include "core/rgb.hpp"
+#include "terminal/box_drawing.hpp"
 #include "terminal/color_scheme.hpp"
 #include "terminal/key_encoder.hpp"
 #include "terminal/key_event.hpp"
@@ -25,19 +26,6 @@ namespace
 								   green:rgb.green / 255.0
 									blue:rgb.blue / 255.0
 								   alpha:rgb.alpha / 255.0];
-	}
-
-	void append_utf16( NSMutableString* out, char32_t code_point ){
-		if( code_point < 0x10000 ){
-			unichar const unit = static_cast<unichar>( code_point );
-			[out appendString:[NSString stringWithCharacters:&unit length:1]];
-		}
-		else{
-			char32_t const bias  = code_point - 0x10000;
-			unichar const  units[2] = { static_cast<unichar>( 0xD800 + ( bias >> 10 ) ),
-										static_cast<unichar>( 0xDC00 + ( bias & 0x3FF ) ) };
-			[out appendString:[NSString stringWithCharacters:units length:2]];
-		}
 	}
 
 	/// Maps an AppKit function-key character (0xF7xx) or control character onto
@@ -116,6 +104,17 @@ namespace
 	CGFloat _baseline; ///< Distance from the cell top to the text baseline.
 	CGFloat _pad_x;    ///< Inset from the view edges to the character grid.
 	CGFloat _pad_y;
+	BOOL    _forces_focused_appearance;
+}
+
+- (void)setForcesFocusedAppearance:(BOOL)forced{
+	_forces_focused_appearance = forced;
+	self.needsDisplay          = YES;
+}
+
+/// The cursor is a filled block only while the view has the keyboard.
+- (BOOL)hasKeyboardFocus{
+	return _forces_focused_appearance || self.window.firstResponder == self;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame{
@@ -242,12 +241,17 @@ namespace
 		column = run_end;
 	}
 
-	// Pass 2: the glyphs, one attributed line per row.
-	NSMutableAttributedString* text = [NSMutableAttributedString new];
-
+	// Pass 2: the glyphs, each placed at its exact grid column.
+	//
+	// Deliberately not one CTLine per row: CoreText would advance by each glyph's
+	// natural width, so a wide CJK glyph or any fallback font would shift every
+	// following column and the text would drift out from under the cursor, which
+	// is positioned on the grid.
 	for( int i = 0; i < screen.columns() && i < static_cast<int>( line.size() ); ++i ){
 		Cell const& cell = line[static_cast<std::size_t>( i )];
 		if( has_flag( cell.attributes.flags, CellFlag::WIDE_TRAIL ) )
+			continue;
+		if( cell.character == U'\0' || cell.character == U' ' )
 			continue;
 
 		bool const bold    = has_flag( cell.attributes.flags, CellFlag::BOLD );
@@ -256,68 +260,268 @@ namespace
 		Rgb const foreground = inverse ? _scheme.resolve( cell.attributes.background, false, false )
 									   : _scheme.resolve( cell.attributes.foreground, true, bold );
 
-		NSMutableString* character = [NSMutableString new];
-		append_utf16( character, cell.character == U'\0' ? U' ' : cell.character );
+		[self drawGlyphForCell:cell atColumn:i top:top color:foreground bold:bold];
+	}
 
-		NSMutableDictionary* attributes = [NSMutableDictionary new];
-		attributes[NSFontAttributeName]            = bold ? _bold_font : _font;
-		attributes[NSForegroundColorAttributeName] = ns_color( foreground );
-		if( has_flag( cell.attributes.flags, CellFlag::UNDERLINE ) ||
-			has_flag( cell.attributes.flags, CellFlag::DOUBLE_UNDERLINE ) ){
-			attributes[NSUnderlineStyleAttributeName] = @( NSUnderlineStyleSingle );
+	// Pass 3: the decorations the glyph pass does not carry.
+	for( int i = 0; i < screen.columns() && i < static_cast<int>( line.size() ); ++i ){
+		Cell const&    cell  = line[static_cast<std::size_t>( i )];
+		CellFlag const flags = cell.attributes.flags;
+		if( has_flag( flags, CellFlag::WIDE_TRAIL ) )
+			continue;
+
+		bool const underline = has_flag( flags, CellFlag::UNDERLINE ) || has_flag( flags, CellFlag::DOUBLE_UNDERLINE );
+		if( !underline && !has_flag( flags, CellFlag::STRIKEOUT ) )
+			continue;
+
+		bool const inverse = has_flag( flags, CellFlag::INVERSE ) != reverse_video;
+		Rgb const  colour  = inverse ? _scheme.resolve( cell.attributes.background, false, false )
+									 : _scheme.resolve( cell.attributes.foreground, true,
+														has_flag( flags, CellFlag::BOLD ) );
+		[ns_color( colour ) setFill];
+
+		CGFloat const x     = _pad_x + i * _cell_width;
+		CGFloat const width = has_flag( flags, CellFlag::WIDE_LEAD ) ? _cell_width * 2 : _cell_width;
+
+		if( underline ){
+			NSRectFill( NSMakeRect( x, top + _baseline + 2, width, 1 ) );
+			if( has_flag( flags, CellFlag::DOUBLE_UNDERLINE ) )
+				NSRectFill( NSMakeRect( x, top + _baseline + 4, width, 1 ) );
 		}
-		if( has_flag( cell.attributes.flags, CellFlag::STRIKEOUT ) )
-			attributes[NSStrikethroughStyleAttributeName] = @( NSUnderlineStyleSingle );
+		if( has_flag( flags, CellFlag::STRIKEOUT ) )
+			NSRectFill( NSMakeRect( x, top + _baseline - _font.xHeight / 2, width, 1 ) );
+	}
+}
 
-		[text appendAttributedString:[[NSAttributedString alloc] initWithString:character attributes:attributes]];
+/// Draws the line- or block-drawing character in `cell`, if it is one.
+///
+/// Arms run from the cell's centre to its edge, so the same arm drawn in the
+/// neighbouring cell meets it exactly and a frame reads as continuous.
+- (BOOL)drawBoxOrBlockForCell:(Cell const&)cell atColumn:(int)column top:(CGFloat)top color:(Rgb)color{
+	CGFloat const left  = _pad_x + column * _cell_width;
+	NSRect const  cellRect = NSMakeRect( left, top, _cell_width, _cell_height );
+
+	if( auto const block = block_glyph_for( cell.character ) ){
+		NSRect  area  = cellRect;
+		CGFloat alpha = 1.0;
+
+		switch( *block ){
+			case BlockGlyph::FULL:
+				break;
+			case BlockGlyph::UPPER_HALF:
+				area.size.height = std::round( _cell_height / 2 );
+				break;
+			case BlockGlyph::LOWER_HALF:
+				area.size.height = std::round( _cell_height / 2 );
+				area.origin.y += _cell_height - area.size.height;
+				break;
+			case BlockGlyph::LEFT_HALF:
+				area.size.width = std::round( _cell_width / 2 );
+				break;
+			case BlockGlyph::RIGHT_HALF:
+				area.size.width = std::round( _cell_width / 2 );
+				area.origin.x += _cell_width - area.size.width;
+				break;
+			case BlockGlyph::LIGHT_SHADE:
+				alpha = 0.25;
+				break;
+			case BlockGlyph::MEDIUM_SHADE:
+				alpha = 0.5;
+				break;
+			case BlockGlyph::DARK_SHADE:
+				alpha = 0.75;
+				break;
+		}
+
+		[ns_color( color.with_alpha( static_cast<std::uint8_t>( alpha * 255 ) ) ) setFill];
+		NSRectFillUsingOperation( area, NSCompositingOperationSourceOver );
+		return YES;
+	}
+
+	auto const box = box_glyph_for( cell.character );
+	if( !box )
+		return NO;
+
+	// A light arm is one device pixel at 1x and stays crisp when scaled; heavy
+	// and double are derived from it so the whole set looks like one family.
+	CGFloat const thin   = std::max( 1.0, std::floor( _cell_height / 14.0 ) );
+	CGFloat const thick  = thin * 2;
+	CGFloat const gap    = thin;
+
+	CGFloat const mid_x = std::floor( left + _cell_width / 2 );
+	CGFloat const mid_y = std::floor( top + _cell_height / 2 );
+
+	[ns_color( color ) setFill];
+
+	// Each arm is drawn as a rect from the centre outwards. Double arms are two
+	// parallel rails with a gap, and the centre stays open so joins line up.
+	auto const arm = [&]( Stroke stroke, CGFloat dx, CGFloat dy ){
+		if( stroke == Stroke::NONE )
+			return;
+
+		bool const    horizontal = dx != 0;
+		CGFloat const weight     = stroke == Stroke::HEAVY ? thick : thin;
+
+		CGFloat const to_x = dx < 0 ? left : left + _cell_width;
+		CGFloat const to_y = dy < 0 ? top : top + _cell_height;
+
+		auto const rail = [&]( CGFloat offset ){
+			if( horizontal ){
+				CGFloat const x = dx < 0 ? to_x : mid_x;
+				NSRectFill( NSMakeRect( x, mid_y - weight / 2 + offset, std::abs( mid_x - to_x ) + weight, weight ) );
+			}
+			else{
+				CGFloat const y = dy < 0 ? to_y : mid_y;
+				NSRectFill( NSMakeRect( mid_x - weight / 2 + offset, y, weight, std::abs( mid_y - to_y ) + weight ) );
+			}
+		};
+
+		if( stroke == Stroke::DOUBLE ){
+			rail( -( gap + thin ) / 2 - thin / 2 );
+			rail( ( gap + thin ) / 2 + thin / 2 );
+		}
+		else{
+			rail( 0 );
+		}
+	};
+
+	arm( box->left, -1, 0 );
+	arm( box->right, 1, 0 );
+	arm( box->up, 0, -1 );
+	arm( box->down, 0, 1 );
+
+	return YES;
+}
+
+/// Draws one cell's glyph anchored to its grid column.
+///
+/// Falls back to another font when the monospace face has no glyph, which is
+/// what emoji and less common scripts need; the fallback glyph is scaled to fit
+/// the cell so the grid still holds.
+- (void)drawGlyphForCell:(Cell const&)cell
+				atColumn:(int)column
+					 top:(CGFloat)top
+				   color:(Rgb)color
+					bold:(bool)bold{
+	// Line and block drawing is done by hand: a font's glyphs for these do not
+	// tile, so frames in a TUI come apart at every join.
+	if( [self drawBoxOrBlockForCell:cell atColumn:column top:top color:color] )
+		return;
+
+	unichar  utf16[2] = { 0, 0 };
+	CFIndex  units    = 1;
+	char32_t code     = cell.character;
+
+	if( code < 0x10000 ){
+		utf16[0] = static_cast<unichar>( code );
+	}
+	else{
+		char32_t const bias = code - 0x10000;
+		utf16[0]            = static_cast<unichar>( 0xD800 + ( bias >> 10 ) );
+		utf16[1]            = static_cast<unichar>( 0xDC00 + ( bias & 0x3FF ) );
+		units               = 2;
+	}
+
+	CTFontRef base = (__bridge CTFontRef)( bold ? _bold_font : _font );
+
+	CGGlyph glyphs[2] = { 0, 0 };
+	CTFontRef  font    = base;
+	CFTypeRef  owned   = nullptr;
+
+	if( !CTFontGetGlyphsForCharacters( base, utf16, glyphs, units ) ){
+		// No glyph in the monospace face: ask CoreText which font has one.
+		CFStringRef text = CFStringCreateWithCharacters( kCFAllocatorDefault, utf16, units );
+		CTFontRef substitute = CTFontCreateForString( base, text, CFRangeMake( 0, units ) );
+		CFRelease( text );
+
+		if( substitute == nullptr )
+			return;
+		if( !CTFontGetGlyphsForCharacters( substitute, utf16, glyphs, units ) ){
+			CFRelease( substitute );
+			return;
+		}
+		font  = substitute;
+		owned = substitute;
+	}
+
+	CGFloat const span = has_flag( cell.attributes.flags, CellFlag::WIDE_LEAD ) ? _cell_width * 2 : _cell_width;
+
+	// Only a substituted face gets centred. The monospace font is designed to sit
+	// flush at the cell origin, and centring it would put visible gaps between
+	// CJK glyphs that are meant to touch.
+	CGFloat offset = 0;
+	if( font != base ){
+		CGSize advance{};
+		CTFontGetAdvancesForGlyphs( font, kCTFontOrientationHorizontal, glyphs, &advance, 1 );
+		if( advance.width > 0 && advance.width < span )
+			offset = ( span - advance.width ) / 2;
 	}
 
 	CGContextRef context = NSGraphicsContext.currentContext.CGContext;
 	CGContextSaveGState( context );
+	CGContextSetFillColorWithColor( context, ns_color( color ).CGColor );
 
-	// CoreText draws in an unflipped space; flip back around this row's baseline.
-	CGContextSetTextMatrix( context, CGAffineTransformIdentity );
-	CGContextTranslateCTM( context, _pad_x, top + _baseline );
+	// The view is flipped; undo it so glyphs are not drawn upside down.
+	CGContextTranslateCTM( context, _pad_x + column * _cell_width + offset, top + _baseline );
 	CGContextScaleCTM( context, 1, -1 );
+	CGContextSetTextMatrix( context, CGAffineTransformIdentity );
 
-	CTLineRef ct_line = CTLineCreateWithAttributedString( (__bridge CFAttributedStringRef)text );
-	CGContextSetTextPosition( context, 0, 0 );
-	CTLineDraw( ct_line, context );
-	CFRelease( ct_line );
+	CGPoint const position = CGPointMake( 0, 0 );
+	CTFontDrawGlyphs( font, glyphs, &position, 1, context );
 
 	CGContextRestoreGState( context );
+
+	if( owned != nullptr )
+		CFRelease( owned );
 }
 
 - (void)drawCursor{
 	if( !_terminal->modes().cursor_visible )
 		return;
 
-	CursorState const& cursor = _terminal->screen().cursor();
-	NSRect const rect = NSMakeRect( _pad_x + cursor.column * _cell_width, _pad_y + cursor.row * _cell_height,
-									_cell_width, _cell_height );
+	Screen const&      screen = _terminal->screen();
+	CursorState const& cursor = screen.cursor();
 
-	if( self.window.firstResponder == self ){
-		[ns_color( _scheme.cursor() ) setFill];
-		NSRectFill( rect );
+	// After the last column the cursor parks one cell past the grid waiting for
+	// the wrap; draw it on the last cell instead of outside the view.
+	int const row    = std::clamp( cursor.row, 0, screen.rows() - 1 );
+	int       column = std::clamp( cursor.column, 0, screen.columns() - 1 );
 
-		// Redraw the covered character in the cursor-text colour.
-		Line const& line = _terminal->screen().line( cursor.row );
-		if( cursor.column < static_cast<int>( line.size() ) ){
-			Cell const& cell = line[static_cast<std::size_t>( cursor.column )];
-			if( cell.character != U'\0' && cell.character != U' ' ){
-				NSMutableString* character = [NSMutableString new];
-				append_utf16( character, cell.character );
-				[character drawAtPoint:NSMakePoint( NSMinX( rect ), NSMinY( rect ) )
-						withAttributes:@{
-							NSFontAttributeName : _font,
-							NSForegroundColorAttributeName : ns_color( _scheme.cursor_text() ),
-						}];
-			}
-		}
+	Line const& line = screen.line( row );
+
+	// On the trailing half of a wide glyph, back up so the block covers the
+	// whole character rather than slicing it down the middle.
+	if( column < static_cast<int>( line.size() ) && column > 0
+		&& has_flag( line[static_cast<std::size_t>( column )].attributes.flags, CellFlag::WIDE_TRAIL ) ){
+		--column;
 	}
-	else{
+
+	bool const wide = column < static_cast<int>( line.size() )
+					  && has_flag( line[static_cast<std::size_t>( column )].attributes.flags, CellFlag::WIDE_LEAD );
+
+	NSRect const rect = NSMakeRect( _pad_x + column * _cell_width, _pad_y + row * _cell_height,
+									wide ? _cell_width * 2 : _cell_width, _cell_height );
+
+	if( ![self hasKeyboardFocus] ){
 		[ns_color( _scheme.cursor() ) setStroke];
 		NSFrameRect( NSInsetRect( rect, 0.5, 0.5 ) );
+		return;
+	}
+
+	[ns_color( _scheme.cursor() ) setFill];
+	NSRectFill( rect );
+
+	// Repaint the covered glyph in the cursor-text colour, through the same
+	// grid-anchored path the row uses so it cannot land a pixel off.
+	if( column < static_cast<int>( line.size() ) ){
+		Cell const& cell = line[static_cast<std::size_t>( column )];
+		if( cell.character != U'\0' && cell.character != U' ' ){
+			[self drawGlyphForCell:cell
+						  atColumn:column
+							   top:_pad_y + row * _cell_height
+							 color:_scheme.cursor_text()
+							  bold:has_flag( cell.attributes.flags, CellFlag::BOLD )];
+		}
 	}
 }
 
