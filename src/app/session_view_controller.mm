@@ -211,6 +211,28 @@ namespace
 	} );
 
 	terminal.bell_rang.connect( []{ NSBeep(); } );
+
+	// OSC 52: the remote side asked for text to go on the local clipboard. The
+	// emulator has already refused the read direction, so this only ever writes.
+	terminal.clipboard_write_requested.connect( [weak_self]( std::string const& text ){
+		if( weak_self == nil || text.empty() )
+			return;
+
+		NSPasteboard* pasteboard = NSPasteboard.generalPasteboard;
+		[pasteboard clearContents];
+		[pasteboard setString:@( text.c_str() ) forType:NSPasteboardTypeString];
+	} );
+
+	// The alternate screen keeps no history, so a scroll offset from the normal
+	// buffer would be meaningless - and a selection would point at rows that are
+	// no longer there.
+	terminal.alternate_screen_changed.connect( [weak_self]( bool ){
+		ArTermSessionViewController* strong_self = weak_self;
+		if( strong_self == nil )
+			return;
+		[strong_self->_terminal_view scrollToBottom];
+		[strong_self->_terminal_view clearSelection];
+	} );
 }
 
 - (ArTermTerminalView*)terminalView{

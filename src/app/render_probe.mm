@@ -13,6 +13,8 @@ namespace
 		char const* name;
 		char const* description;
 		std::string content;
+		/// Applied after the content is fed, for state a byte stream cannot set.
+		void ( *arrange )( ArTermTerminalView* view ){ nullptr };
 	};
 
 	/// Exercises every path the renderer has: grid alignment against a ruler,
@@ -77,9 +79,22 @@ namespace
 		return probe;
 	}
 
+	/// Enough rows to push earlier ones into the history.
+	std::string numbered_rows(){
+		std::string probe;
+		for( int i = 1; i <= 60; ++i )
+			probe += "row " + std::to_string( i ) + " of sixty\r\n";
+		probe += "prompt$ ";
+		return probe;
+	}
+
 	std::vector<Case> cases(){
 		return {
 			{ "general", "grid, glyphs, colours, line drawing", general() },
+			{ "scrolled-back", "view scrolled into the history", numbered_rows(),
+			  []( ArTermTerminalView* view ){ [view scrollByRows:8]; } },
+			{ "selection", "a selection spanning several rows", numbered_rows(),
+			  []( ArTermTerminalView* view ){ [view selectFromRow:2 column:4 toRow:4 column:9]; } },
 			{ "cursor-wide", "cursor over a double-width glyph", cursor_on_wide() },
 			{ "cursor-eol", "cursor past the last column", cursor_at_end_of_line() },
 			{ "cursor-hidden", "DECTCEM off, inverse text", cursor_hidden_and_inverse() },
@@ -94,6 +109,8 @@ namespace
 		// never will; the probe forces the focused look so the cursor is visible.
 		[view setForcesFocusedAppearance:YES];
 		[view feed:probe.content];
+		if( probe.arrange != nullptr )
+			probe.arrange( view );
 
 		NSBitmapImageRep* bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
 		if( bitmap == nil )

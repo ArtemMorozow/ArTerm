@@ -30,4 +30,16 @@
 /// this; a real view follows its first-responder state.
 - (void)setForcesFocusedAppearance:(BOOL)forced;
 
+/// Scrolls `delta` rows towards the history (positive) or the live screen.
+- (void)scrollByRows:(int)delta;
+
+/// Returns the view to the live screen.
+- (void)scrollToBottom;
+
+/// Drops any selection.
+- (void)clearSelection;
+
+/// Selects a range for the render probe, which has no mouse to drag with.
+- (void)selectFromRow:(int)fromRow column:(int)fromColumn toRow:(int)toRow column:(int)toColumn;
+
 @end

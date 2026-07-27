@@ -5,6 +5,7 @@
 #include "terminal/color_scheme.hpp"
 #include "terminal/key_encoder.hpp"
 #include "terminal/key_event.hpp"
+#include "terminal/selection.hpp"
 
 #import <CoreText/CoreText.h>
 
@@ -20,6 +21,13 @@ namespace
 {
 
 	constexpr CGFloat FONT_SIZE = 13.0;
+
+	/// +scrollerWidth has been deprecated since 10.7 in favour of the
+	/// size/style form.
+	CGFloat overlay_scroller_width(){
+		return [NSScroller scrollerWidthForControlSize:NSControlSizeRegular
+										 scrollerStyle:NSScrollerStyleOverlay];
+	}
 
 	NSColor* ns_color( Rgb rgb ){
 		return [NSColor colorWithSRGBRed:rgb.red / 255.0
@@ -105,6 +113,15 @@ namespace
 	CGFloat _pad_x;    ///< Inset from the view edges to the character grid.
 	CGFloat _pad_y;
 	BOOL    _forces_focused_appearance;
+
+	/// How many rows the view is scrolled back from the live screen. Zero means
+	/// the bottom, which is where output keeps it unless the user says otherwise.
+	int _scroll_offset;
+
+	Selection _selection;
+	BOOL      _dragging;
+
+	NSScroller* _scroller;
 }
 
 - (void)setForcesFocusedAppearance:(BOOL)forced{
@@ -136,6 +153,15 @@ namespace
 		_pad_x = 8;
 		_pad_y = 6;
 
+		_scroller = [[NSScroller alloc] initWithFrame:NSMakeRect( 0, 0, overlay_scroller_width(), 100 )];
+		_scroller.scrollerStyle       = NSScrollerStyleOverlay;
+		_scroller.knobStyle           = NSScrollerKnobStyleLight;
+		_scroller.target              = self;
+		_scroller.action              = @selector( scrollerMoved: );
+		_scroller.autoresizingMask    = NSViewMinXMargin | NSViewHeightSizable;
+		_scroller.enabled             = NO;
+		[self addSubview:_scroller];
+
 		self.wantsLayer            = YES;
 		self.layer.backgroundColor = ns_color( _scheme.background() ).CGColor;
 	}
@@ -155,8 +181,108 @@ namespace
 }
 
 - (void)feed:(std::string const&)data{
+	int const before = _terminal->screen().scrollback_size();
+
 	_terminal->receive( data );
+
+	// Output that pushes rows into the history would otherwise drag the view's
+	// content upwards; holding the offset keeps what the user is reading still.
+	if( _scroll_offset > 0 ){
+		int const grew = _terminal->screen().scrollback_size() - before;
+		if( grew > 0 )
+			_scroll_offset = std::min( _scroll_offset + grew, _terminal->screen().scrollback_size() );
+	}
+
+	[self updateScroller];
 	self.needsDisplay = YES;
+}
+
+// -- Scrollback -------------------------------------------------------------
+
+- (void)scrollToBottom{
+	if( _scroll_offset == 0 )
+		return;
+	_scroll_offset    = 0;
+	self.needsDisplay = YES;
+	[self updateScroller];
+}
+
+- (void)scrollByRows:(int)delta{
+	int const history = _terminal->screen().scrollback_size();
+	int const wanted  = std::clamp( _scroll_offset + delta, 0, history );
+	if( wanted == _scroll_offset )
+		return;
+
+	_scroll_offset    = wanted;
+	self.needsDisplay = YES;
+	[self updateScroller];
+}
+
+/// The row shown at the top of the view, in the coordinate space
+/// `Screen::history_line` uses: negative reaches into the scrollback.
+- (int)topRow{
+	return -_scroll_offset;
+}
+
+- (void)updateScroller{
+	if( _scroller == nil )
+		return;
+
+	Screen const& screen  = _terminal->screen();
+	int const     history = screen.scrollback_size();
+	int const     total   = history + screen.rows();
+
+	_scroller.enabled = history > 0;
+	if( total <= 0 )
+		return;
+
+	_scroller.knobProportion = static_cast<CGFloat>( screen.rows() ) / total;
+	// The scroller runs top-down while the offset counts upwards from the live
+	// screen, so a full offset is position zero.
+	_scroller.doubleValue = history > 0 ? 1.0 - static_cast<double>( _scroll_offset ) / history : 1.0;
+}
+
+- (void)scrollerMoved:(NSScroller*)scroller{
+	Screen const& screen  = _terminal->screen();
+	int const     history = screen.scrollback_size();
+	if( history <= 0 )
+		return;
+
+	switch( scroller.hitPart ){
+		case NSScrollerKnob:
+		case NSScrollerKnobSlot:
+			_scroll_offset = static_cast<int>( std::lround( ( 1.0 - scroller.doubleValue ) * history ) );
+			break;
+		case NSScrollerDecrementPage:
+			_scroll_offset += screen.rows();
+			break;
+		case NSScrollerIncrementPage:
+			_scroll_offset -= screen.rows();
+			break;
+		default:
+			return;
+	}
+
+	_scroll_offset    = std::clamp( _scroll_offset, 0, history );
+	self.needsDisplay = YES;
+	[self updateScroller];
+}
+
+- (void)scrollWheel:(NSEvent*)event{
+	// A trackpad reports fractional lines; accumulate so slow scrolling still
+	// moves eventually instead of rounding to nothing every time.
+	static CGFloat carry = 0;
+
+	CGFloat const delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / _cell_height
+														  : event.scrollingDeltaY;
+	carry += delta;
+
+	int const rows = static_cast<int>( carry );
+	if( rows == 0 )
+		return;
+	carry -= rows;
+
+	[self scrollByRows:rows];
 }
 
 // -- Geometry ---------------------------------------------------------------
@@ -168,7 +294,11 @@ namespace
 - (void)setFrameSize:(NSSize)size{
 	[super setFrameSize:size];
 
-	int const columns = std::max( 2, static_cast<int>( ( size.width - 2 * _pad_x ) / _cell_width ) );
+	CGFloat const scroller_width = overlay_scroller_width();
+	_scroller.frame = NSMakeRect( size.width - scroller_width, 0, scroller_width, size.height );
+
+	int const columns =
+		std::max( 2, static_cast<int>( ( size.width - 2 * _pad_x - scroller_width ) / _cell_width ) );
 	int const rows    = std::max( 2, static_cast<int>( ( size.height - 2 * _pad_y ) / _cell_height ) );
 
 	if( columns == _terminal->columns() && rows == _terminal->rows() )
@@ -200,36 +330,46 @@ namespace
 	for( int row = first_row; row <= last_row; ++row )
 		[self drawRow:row];
 
-	[self drawCursor];
+	// While scrolled into the history the cursor belongs to a screen the user is
+	// not looking at, so drawing it there would be a lie.
+	if( _scroll_offset == 0 )
+		[self drawCursor];
 }
 
+/// `row` is a screen row; the history row it shows depends on the scroll offset.
 - (void)drawRow:(int)row{
-	Screen const& screen = _terminal->screen();
-	Line const&   line   = screen.line( row );
-	CGFloat const top    = _pad_y + row * _cell_height;
+	Screen const& screen     = _terminal->screen();
+	int const     history_row = [self topRow] + row;
+
+	Line const* source = screen.history_line( history_row );
+	if( source == nullptr )
+		return;
+
+	Line const&   line = *source;
+	CGFloat const top  = _pad_y + row * _cell_height;
 
 	bool const reverse_video = _terminal->modes().reverse_video;
+
+	// The background a cell ends up with, selection included.
+	auto const background_of = [&]( int index ) -> Rgb{
+		if( _selection.contains( history_row, index ) )
+			return _scheme.selection();
+
+		Cell const& cell    = line[static_cast<std::size_t>( index )];
+		bool const  inverse = has_flag( cell.attributes.flags, CellFlag::INVERSE ) != reverse_video;
+		return inverse ? _scheme.resolve( cell.attributes.foreground, true,
+										  has_flag( cell.attributes.flags, CellFlag::BOLD ) )
+					   : _scheme.resolve( cell.attributes.background, false, false );
+	};
 
 	// Pass 1: background runs, merged so a full row of one colour is one fill.
 	int column = 0;
 	while( column < screen.columns() && column < static_cast<int>( line.size() ) ){
-		Cell const& cell = line[static_cast<std::size_t>( column )];
-
-		bool const inverse = has_flag( cell.attributes.flags, CellFlag::INVERSE ) != reverse_video;
-		Rgb const  background = inverse ? _scheme.resolve( cell.attributes.foreground, true,
-														   has_flag( cell.attributes.flags, CellFlag::BOLD ) )
-										: _scheme.resolve( cell.attributes.background, false, false );
+		Rgb const background = background_of( column );
 
 		int run_end = column + 1;
-		while( run_end < screen.columns() && run_end < static_cast<int>( line.size() ) ){
-			Cell const& next          = line[static_cast<std::size_t>( run_end )];
-			bool const  next_inverse  = has_flag( next.attributes.flags, CellFlag::INVERSE ) != reverse_video;
-			Rgb const   next_background = next_inverse
-											  ? _scheme.resolve( next.attributes.foreground, true,
-																 has_flag( next.attributes.flags, CellFlag::BOLD ) )
-											  : _scheme.resolve( next.attributes.background, false, false );
-			if( next_background != background )
-				break;
+		while( run_end < screen.columns() && run_end < static_cast<int>( line.size() )
+			   && background_of( run_end ) == background ){
 			++run_end;
 		}
 
@@ -257,8 +397,13 @@ namespace
 		bool const bold    = has_flag( cell.attributes.flags, CellFlag::BOLD );
 		bool const inverse = has_flag( cell.attributes.flags, CellFlag::INVERSE ) != reverse_video;
 
-		Rgb const foreground = inverse ? _scheme.resolve( cell.attributes.background, false, false )
-									   : _scheme.resolve( cell.attributes.foreground, true, bold );
+		Rgb foreground = inverse ? _scheme.resolve( cell.attributes.background, false, false )
+								 : _scheme.resolve( cell.attributes.foreground, true, bold );
+
+		// Selected cells took the selection background, so the text has to take
+		// the matching foreground or it would sit on top of its own colour.
+		if( _selection.contains( history_row, i ) )
+			foreground = _scheme.selection_text();
 
 		[self drawGlyphForCell:cell atColumn:i top:top color:foreground bold:bold];
 	}
@@ -541,6 +686,97 @@ namespace
 	return [super resignFirstResponder];
 }
 
+// -- Selection --------------------------------------------------------------
+
+/// Turns a point in the view into the cell under it, in history space.
+///
+/// Clamped rather than rejected: a drag that leaves the view should keep
+/// extending the selection to the nearest edge, which is what users expect.
+- (Position)positionAtPoint:(NSPoint)point{
+	Screen const& screen = _terminal->screen();
+
+	int const column = std::clamp( static_cast<int>( std::floor( ( point.x - _pad_x ) / _cell_width ) ), 0,
+								   screen.columns() - 1 );
+	int const row    = std::clamp( static_cast<int>( std::floor( ( point.y - _pad_y ) / _cell_height ) ), 0,
+								   screen.rows() - 1 );
+
+	return Position{ [self topRow] + row, column };
+}
+
+- (void)mouseDown:(NSEvent*)event{
+	NSPoint const  point = [self convertPoint:event.locationInWindow fromView:nil];
+	Position const start = [self positionAtPoint:point];
+
+	SelectionUnit unit = SelectionUnit::CHARACTER;
+	if( event.clickCount == 2 )
+		unit = SelectionUnit::WORD;
+	else if( event.clickCount >= 3 )
+		unit = SelectionUnit::LINE;
+
+	_selection.begin( start, unit, _terminal->screen() );
+	_dragging         = YES;
+	self.needsDisplay = YES;
+}
+
+- (void)mouseDragged:(NSEvent*)event{
+	if( !_dragging )
+		return;
+
+	NSPoint const point = [self convertPoint:event.locationInWindow fromView:nil];
+
+	// Dragging above or below the view scrolls the history, the way a text view
+	// does, so a selection can reach past what is on screen.
+	if( point.y < _pad_y )
+		[self scrollByRows:1];
+	else if( point.y > NSMaxY( self.bounds ) - _pad_y )
+		[self scrollByRows:-1];
+
+	_selection.extend_to( [self positionAtPoint:point], _terminal->screen() );
+	self.needsDisplay = YES;
+}
+
+- (void)mouseUp:(NSEvent*)event{
+	_dragging = NO;
+}
+
+- (void)copy:(id)sender{
+	std::string const text = _selection.text( _terminal->screen() );
+	if( text.empty() )
+		return;
+
+	NSPasteboard* pasteboard = NSPasteboard.generalPasteboard;
+	[pasteboard clearContents];
+	[pasteboard setString:@( text.c_str() ) forType:NSPasteboardTypeString];
+}
+
+- (void)selectAll:(id)sender{
+	Screen const& screen = _terminal->screen();
+
+	_selection.begin( Position{ -screen.scrollback_size(), 0 }, SelectionUnit::CHARACTER, screen );
+	_selection.extend_to( Position{ screen.rows() - 1, screen.columns() - 1 }, screen );
+	self.needsDisplay = YES;
+}
+
+- (void)selectFromRow:(int)fromRow column:(int)fromColumn toRow:(int)toRow column:(int)toColumn{
+	_selection.begin( Position{ fromRow, fromColumn }, SelectionUnit::CHARACTER, _terminal->screen() );
+	_selection.extend_to( Position{ toRow, toColumn }, _terminal->screen() );
+	self.needsDisplay = YES;
+}
+
+- (void)clearSelection{
+	if( !_selection.is_active() )
+		return;
+	_selection.clear();
+	self.needsDisplay = YES;
+}
+
+/// Greys out Copy when there is nothing selected.
+- (BOOL)validateMenuItem:(NSMenuItem*)item{
+	if( item.action == @selector( copy: ) )
+		return _selection.is_active() && !_selection.text( _terminal->screen() ).empty();
+	return YES;
+}
+
 - (void)keyDown:(NSEvent*)event{
 	NSString* raw  = event.characters;
 	NSString* base = event.charactersIgnoringModifiers;
@@ -571,6 +807,10 @@ namespace
 		[super keyDown:event];
 		return;
 	}
+
+	// Typing means the user is done reading history and done with the selection.
+	[self scrollToBottom];
+	[self clearSelection];
 
 	if( _on_input )
 		_on_input( std::move( encoded ) );
