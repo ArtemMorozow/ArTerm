@@ -169,10 +169,11 @@ namespace
 	_font      = [NSFont monospacedSystemFontOfSize:_font_size weight:NSFontWeightRegular];
 	_bold_font = [NSFont monospacedSystemFontOfSize:_font_size weight:NSFontWeightBold];
 
-	// A digit's advance is the cell width for a monospaced font. Line height
-	// gets a little extra leading so text breathes instead of looking like a
-	// 1980s VT; the glyph baseline is centred in that taller cell.
-	_cell_width         = std::ceil( [@"0" sizeWithAttributes:@{ NSFontAttributeName : _font }].width );
+	// A digit's advance is the cell width for a monospaced font, and it is kept
+	// fractional on purpose. Rounding it up added as much as a whole pixel of
+	// spacing per character at some sizes and almost none at others, so the text
+	// looked stretched at one size and correct at the next.
+	_cell_width         = [@"0" sizeWithAttributes:@{ NSFontAttributeName : _font }].width;
 	CGFloat const glyph = _font.ascender - _font.descender;
 	_cell_height        = std::ceil( glyph * 1.25 );
 	_baseline           = std::round( _font.ascender + ( _cell_height - glyph ) / 2.0 );

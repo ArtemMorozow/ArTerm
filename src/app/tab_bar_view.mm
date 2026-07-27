@@ -163,8 +163,8 @@ namespace
 		// breaks to resolve it can be ours - which collapses the bar to nothing.
 		self.translatesAutoresizingMaskIntoConstraints = NO;
 
-		self.wantsLayer            = YES;
-		self.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
+		// No background of its own: as a titlebar accessory the strip sits on the
+		// window's own material, and painting over it would break the blur.
 
 		// A stack view rather than frames computed by hand: the first attempt did
 		// the arithmetic in -layout, which ran once while the bounds were still

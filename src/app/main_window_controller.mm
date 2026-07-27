@@ -68,6 +68,8 @@ namespace
 
 		_split                       = split;
 		window.contentViewController = split;
+
+		[window addTitlebarAccessoryViewController:[_sessions titlebarAccessory]];
 	}
 	return self;
 }

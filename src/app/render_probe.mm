@@ -99,8 +99,20 @@ namespace
 		return probe;
 	}
 
+	/// The same ruler at three sizes: uneven letter spacing shows up at once when
+	/// the rows are stacked, which is how the stretched-text report was found.
+	std::string ruler(){
+		return "0123456789012345678901234567890123456789\r\n"
+			   "|....|....|....|....|....|....|....|....|\r\n"
+			   "the quick brown fox jumps over the lazy dog\r\n"
+			   "MMMMMMMMMMMMMMMMMMMM iiiiiiiiiiiiiiiiiiii\r\n";
+	}
+
 	std::vector<Case> cases(){
 		return {
+			{ "font-13", "default size", ruler(), []( ArTermTerminalView* view ){ [view setFontSize:13]; } },
+			{ "font-14", "one step up", ruler(), []( ArTermTerminalView* view ){ [view setFontSize:14]; } },
+			{ "font-15", "two steps up", ruler(), []( ArTermTerminalView* view ){ [view setFontSize:15]; } },
 			{ "general", "grid, glyphs, colours, line drawing", general() },
 			{ "scrolled-back", "view scrolled into the history", numbered_rows(),
 			  []( ArTermTerminalView* view ){ [view scrollByRows:8]; } },
@@ -162,7 +174,10 @@ bool write_window_probe( NSString* directory ){
 	// The tab bar on its own as well: a layer-backed sibling can confuse
 	// cacheDisplayInRect, so capturing it separately tells a real layout fault
 	// apart from a compositing artefact of the capture itself.
-	if( NSView* strip_view = find_view_of_class( window.contentView, @"ArTermTabBarView" ) ){
+	// The strip now lives in the titlebar, so the search starts at the window's
+	// root view rather than at the content view.
+	NSView* const root = window.contentView.superview ?: window.contentView;
+	if( NSView* strip_view = find_view_of_class( root, @"ArTermTabBarView" ) ){
 		NSBitmapImageRep* strip = [strip_view bitmapImageRepForCachingDisplayInRect:strip_view.bounds];
 		[strip_view cacheDisplayInRect:strip_view.bounds toBitmapImageRep:strip];
 		[[strip representationUsingType:NSBitmapImageFileTypePNG properties:@{}]

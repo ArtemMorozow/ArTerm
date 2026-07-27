@@ -26,6 +26,9 @@
 /// Opens a new-tab start page.
 - (void)newTab;
 
+/// The tab strip, to be installed under the window's title bar.
+- (NSTitlebarAccessoryViewController*)titlebarAccessory;
+
 /// Closes the tab in front, shutting its session down.
 - (void)closeCurrentTab;
 

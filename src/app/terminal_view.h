@@ -30,6 +30,9 @@
 /// this; a real view follows its first-responder state.
 - (void)setForcesFocusedAppearance:(BOOL)forced;
 
+/// Sets the point size of the terminal font and reflows the grid.
+- (void)setFontSize:(CGFloat)size;
+
 /// Scrolls `delta` rows towards the history (positive) or the live screen.
 - (void)scrollByRows:(int)delta;
 

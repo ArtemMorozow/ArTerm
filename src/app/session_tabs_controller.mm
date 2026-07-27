@@ -45,28 +45,24 @@ using namespace arterm;
 	_bar          = [[ArTermTabBarView alloc] initWithFrame:NSZeroRect];
 	_bar.delegate = self;
 
+	// The controller's own view is nothing but the session area. The tab strip
+	// goes into the window's titlebar instead - see -titlebarAccessory.
 	_content = [NSView new];
+	self.view = _content;
+}
 
-	NSView* container = [NSView new];
-	[container addSubview:_bar];
-	[container addSubview:_content];
-
-	// Explicit constraints rather than a stack view: the content has to take
-	// every point the bar does not, and a stack view left that to guesswork.
-	_bar.translatesAutoresizingMaskIntoConstraints     = NO;
-	_content.translatesAutoresizingMaskIntoConstraints = NO;
-	[NSLayoutConstraint activateConstraints:@[
-		[_bar.topAnchor constraintEqualToAnchor:container.topAnchor],
-		[_bar.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-		[_bar.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-
-		[_content.topAnchor constraintEqualToAnchor:_bar.bottomAnchor],
-		[_content.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-		[_content.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-		[_content.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
-	]];
-
-	self.view = container;
+/// The tab strip, wrapped for installation under the window's title bar.
+///
+/// It lives there rather than as a sibling of the session area because a strip
+/// sitting beside the layer-backed terminal was ordered behind it by AppKit:
+/// the bar kept its frame and went on taking clicks, but never drew. The
+/// titlebar is also where a browser-style strip belongs on macOS.
+- (NSTitlebarAccessoryViewController*)titlebarAccessory{
+	NSTitlebarAccessoryViewController* accessory = [NSTitlebarAccessoryViewController new];
+	accessory.view            = _bar;
+	accessory.layoutAttribute = NSLayoutAttributeBottom;
+	accessory.fullScreenMinHeight = NSHeight( _bar.frame );
+	return accessory;
 }
 
 - (void)viewDidLoad{
