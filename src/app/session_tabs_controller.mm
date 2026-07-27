@@ -21,7 +21,7 @@ namespace
 @implementation ArTermSessionTabsController{
 	NSTabView*   _tabs;
 	NSView*      _bar;
-	NSButton*    _add;
+	NSPopUpButton* _add;
 	NSStackView* _tab_buttons;
 
 	std::function<std::optional<ssh::HostProfile>()> _provider;
@@ -41,10 +41,20 @@ namespace
 	_tab_buttons.spacing     = 4;
 	_tab_buttons.alignment   = NSLayoutAttributeCenterY;
 
-	_add        = [NSButton buttonWithTitle:@"+" target:self action:@selector( addTabClicked: )];
-	_add.bezelStyle = NSBezelStyleTexturedRounded;
-	_add.toolTip    = @"Open a new tab for the selected host";
-	[_add.widthAnchor constraintEqualToConstant:32].active = YES;
+	// A pull-down NSPopUpButton rather than a plain button plus a hand-rolled
+	// popUpMenuPositioningItem: the framework owns the menu placement and
+	// tracking, which is what makes the first click reliably open it.
+	_add                 = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:YES];
+	_add.bezelStyle      = NSBezelStyleTexturedRounded;
+	_add.toolTip         = @"Open a new tab for the selected host";
+	[_add.widthAnchor constraintEqualToConstant:46].active = YES;
+
+	// Item 0 of a pull-down is the button's own label and is never chosen.
+	[_add addItemWithTitle:@"+"];
+	[_add.menu addItemWithTitle:@"New SSH Session" action:@selector( newTerminalTab: ) keyEquivalent:@"t"].target =
+		self;
+	[_add.menu addItemWithTitle:@"New File Browser" action:@selector( newFilesTab: ) keyEquivalent:@"b"].target =
+		self;
 
 	_bar = [NSView new];
 	[_bar addSubview:_tab_buttons];
@@ -113,37 +123,26 @@ namespace
 	[self rebuildTabButtons];
 }
 
-- (void)addTabClicked:(id)sender{
-	if( !_provider )
-		return;
+/// The host + acts on, or nothing after telling the user why.
+- (std::optional<arterm::ssh::HostProfile>)profileForNewTab{
+	auto profile = _provider ? _provider() : std::nullopt;
+	if( profile )
+		return profile;
 
-	auto profile = _provider();
-	if( !profile ){
-		NSAlert* alert        = [NSAlert new];
-		alert.messageText     = @"No host selected";
-		alert.informativeText = @"Pick a host in the sidebar first, then use + to open a tab for it.";
-		[alert runModal];
-		return;
-	}
-
-	// The kind is chosen here rather than guessed, which is why a file browser
-	// never appears unasked alongside a shell.
-	NSMenu* menu = [NSMenu new];
-	[menu addItemWithTitle:@"New Terminal" action:@selector( newTerminalTab: ) keyEquivalent:@""].target = self;
-	[menu addItemWithTitle:@"New File Browser" action:@selector( newFilesTab: ) keyEquivalent:@""].target = self;
-
-	[menu popUpMenuPositioningItem:nil
-						atLocation:NSMakePoint( 0, NSHeight( _add.bounds ) )
-							inView:_add];
+	NSAlert* alert        = [NSAlert new];
+	alert.messageText     = @"No host selected";
+	alert.informativeText = @"Pick a host in the sidebar first, then use + to open a tab for it.";
+	[alert runModal];
+	return std::nullopt;
 }
 
 - (void)newTerminalTab:(id)sender{
-	if( auto profile = _provider ? _provider() : std::nullopt )
+	if( auto profile = [self profileForNewTab] )
 		[self openTerminalForProfile:std::move( *profile )];
 }
 
 - (void)newFilesTab:(id)sender{
-	if( auto profile = _provider ? _provider() : std::nullopt )
+	if( auto profile = [self profileForNewTab] )
 		[self openFilesForProfile:std::move( *profile )];
 }
 

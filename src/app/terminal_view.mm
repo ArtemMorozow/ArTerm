@@ -644,30 +644,23 @@ namespace
 	bool const wide = column < static_cast<int>( line.size() )
 					  && has_flag( line[static_cast<std::size_t>( column )].attributes.flags, CellFlag::WIDE_LEAD );
 
-	NSRect const rect = NSMakeRect( _pad_x + column * _cell_width, _pad_y + row * _cell_height,
-									wide ? _cell_width * 2 : _cell_width, _cell_height );
+	NSRect const cell_rect = NSMakeRect( _pad_x + column * _cell_width, _pad_y + row * _cell_height,
+										 wide ? _cell_width * 2 : _cell_width, _cell_height );
+
+	// A slim bar rather than a filled block: it marks the insertion point without
+	// hiding the character under it, which is what a text cursor is for.
+	CGFloat const thickness = std::max( 2.0, std::round( _cell_width / 7.0 ) );
 
 	if( ![self hasKeyboardFocus] ){
+		// Unfocused, the bar becomes an outline of the cell so the position is
+		// still findable but clearly not taking input.
 		[ns_color( _scheme.cursor() ) setStroke];
-		NSFrameRect( NSInsetRect( rect, 0.5, 0.5 ) );
+		NSFrameRect( NSInsetRect( cell_rect, 0.5, 0.5 ) );
 		return;
 	}
 
 	[ns_color( _scheme.cursor() ) setFill];
-	NSRectFill( rect );
-
-	// Repaint the covered glyph in the cursor-text colour, through the same
-	// grid-anchored path the row uses so it cannot land a pixel off.
-	if( column < static_cast<int>( line.size() ) ){
-		Cell const& cell = line[static_cast<std::size_t>( column )];
-		if( cell.character != U'\0' && cell.character != U' ' ){
-			[self drawGlyphForCell:cell
-						  atColumn:column
-							   top:_pad_y + row * _cell_height
-							 color:_scheme.cursor_text()
-							  bold:has_flag( cell.attributes.flags, CellFlag::BOLD )];
-		}
-	}
+	NSRectFill( NSMakeRect( NSMinX( cell_rect ), NSMinY( cell_rect ), thickness, NSHeight( cell_rect ) ) );
 }
 
 // -- Input ------------------------------------------------------------------

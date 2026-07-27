@@ -7,6 +7,7 @@
 #include "ssh/sftp_session.hpp"
 
 #include <atomic>
+#include <iterator>
 #include <format>
 #include <memory>
 #include <string>
@@ -22,6 +23,19 @@ namespace
 	std::uint64_t next_request_id(){
 		static std::atomic<std::uint64_t> counter{ 1 };
 		return counter.fetch_add( 1, std::memory_order_relaxed );
+	}
+
+	std::string format_bytes( std::uint64_t bytes ){
+		char const* const units[] = { "B", "KB", "MB", "GB", "TB" };
+
+		double      value = static_cast<double>( bytes );
+		std::size_t unit  = 0;
+		while( value >= 1024.0 && unit + 1 < std::size( units ) ){
+			value /= 1024.0;
+			++unit;
+		}
+		return unit == 0 ? std::format( "{} {}", bytes, units[unit] )
+						 : std::format( "{:.1f} {}", value, units[unit] );
 	}
 
 	NSString* format_size( std::uint64_t bytes, bool is_directory ){
@@ -66,10 +80,15 @@ namespace
 	ssh::RemoteListing _entries;
 	std::string        _path;
 
-	NSTableView*     _table;
-	NSTextField*     _path_field;
+	NSTableView*         _table;
+	NSTextField*         _path_field;
 	NSProgressIndicator* _spinner;
-	NSTextField*     _status;
+	NSTextField*         _status;
+
+	NSProgressIndicator* _progress;
+	NSButton*            _cancel;
+	/// The transfer in flight, so its progress can be matched and cancelled.
+	std::uint64_t _active_request;
 }
 
 - (instancetype)initWithProfile:(arterm::ssh::HostProfile)profile{
@@ -117,6 +136,13 @@ namespace
 	_table.target               = self;
 	_table.doubleAction         = @selector( openSelected: );
 
+	NSMenu* menu = [NSMenu new];
+	[menu addItemWithTitle:@"Download…" action:@selector( downloadSelected: ) keyEquivalent:@""].target = self;
+	[menu addItem:NSMenuItem.separatorItem];
+	[menu addItemWithTitle:@"Copy Path" action:@selector( copyPath: ) keyEquivalent:@""].target = self;
+	[menu addItemWithTitle:@"Refresh" action:@selector( refresh: ) keyEquivalent:@""].target     = self;
+	_table.menu = menu;
+
 	struct
 	{
 		NSString* identifier;
@@ -145,7 +171,19 @@ namespace
 	_status.textColor = NSColor.secondaryLabelColor;
 	_status.font      = [NSFont systemFontOfSize:11];
 
-	NSStackView* footer = [NSStackView stackViewWithViews:@[ _status ]];
+	_progress                     = [NSProgressIndicator new];
+	_progress.style               = NSProgressIndicatorStyleBar;
+	_progress.indeterminate       = NO;
+	_progress.minValue            = 0;
+	_progress.maxValue            = 1;
+	_progress.hidden              = YES;
+	[_progress.widthAnchor constraintEqualToConstant:160].active = YES;
+
+	_cancel        = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector( cancelTransfer: )];
+	_cancel.bezelStyle = NSBezelStyleTexturedRounded;
+	_cancel.hidden     = YES;
+
+	NSStackView* footer = [NSStackView stackViewWithViews:@[ _status, _progress, _cancel ]];
 	footer.orientation  = NSUserInterfaceLayoutOrientationHorizontal;
 	footer.edgeInsets   = NSEdgeInsetsMake( 4, 8, 4, 8 );
 
@@ -242,11 +280,58 @@ namespace
 			if( strong_self == nil )
 				return;
 			[strong_self->_spinner stopAnimation:nil];
-			strong_self->_status.stringValue = @( message.c_str() );
+			if( strong_self->_active_request != 0 )
+				[strong_self finishTransferWithMessage:@( ( "Download failed: " + message ).c_str() )];
+			else
+				strong_self->_status.stringValue = @( message.c_str() );
+		} );
+	} );
+
+	_session->transfer_started.connect( [weak_self]( std::uint64_t request, std::uint64_t total ){
+		on_main( [weak_self, request, total]{
+			ArTermFilesViewController* strong_self = weak_self;
+			if( strong_self == nil || request != strong_self->_active_request )
+				return;
+			strong_self->_progress.hidden      = NO;
+			strong_self->_cancel.hidden        = NO;
+			strong_self->_progress.doubleValue = 0;
+			strong_self->_status.stringValue =
+				@( std::format( "Downloading {} …", format_bytes( total ) ).c_str() );
+		} );
+	} );
+
+	_session->transfer_progress.connect( [weak_self]( std::uint64_t request, ssh::TransferProgress const& progress ){
+		ssh::TransferProgress const copy = progress;
+		on_main( [weak_self, request, copy]{
+			ArTermFilesViewController* strong_self = weak_self;
+			if( strong_self == nil || request != strong_self->_active_request )
+				return;
+
+			strong_self->_progress.doubleValue = copy.fraction();
+			strong_self->_status.stringValue   = @(
+				std::format( "{} of {} - {}/s", format_bytes( copy.transferred ), format_bytes( copy.total ),
+							 format_bytes( static_cast<std::uint64_t>( copy.bytes_per_second ) ) )
+					.c_str() );
+		} );
+	} );
+
+	_session->transfer_finished.connect( [weak_self]( std::uint64_t request ){
+		on_main( [weak_self, request]{
+			ArTermFilesViewController* strong_self = weak_self;
+			if( strong_self == nil || request != strong_self->_active_request )
+				return;
+			[strong_self finishTransferWithMessage:@"Download complete"];
 		} );
 	} );
 
 	_session->start();
+}
+
+- (void)finishTransferWithMessage:(NSString*)message{
+	_active_request      = 0;
+	_progress.hidden     = YES;
+	_cancel.hidden       = YES;
+	_status.stringValue  = message;
 }
 
 - (void)showListing:(ssh::RemoteListing const&)entries at:(std::string const&)path{
@@ -289,14 +374,103 @@ namespace
 	[self navigateTo:entered != nullptr ? std::string( entered ) : _path];
 }
 
-- (void)openSelected:(id)sender{
+/// The row the user acted on: the one right-clicked, else the selected one.
+- (ssh::RemoteFileEntry const*)targetEntry{
 	NSInteger const row = _table.clickedRow >= 0 ? _table.clickedRow : _table.selectedRow;
 	if( row < 0 || row >= static_cast<NSInteger>( _entries.size() ) )
+		return nullptr;
+	return &_entries[static_cast<std::size_t>( row )];
+}
+
+- (void)openSelected:(id)sender{
+	ssh::RemoteFileEntry const* entry = [self targetEntry];
+	if( entry == nullptr )
 		return;
 
-	auto const& entry = _entries[static_cast<std::size_t>( row )];
-	if( entry.is_directory )
-		[self navigateTo:entry.path];
+	// Double-clicking a directory descends into it; on a file it is the natural
+	// "I want this" gesture, so it downloads.
+	if( entry->is_directory )
+		[self navigateTo:entry->path];
+	else
+		[self downloadSelected:sender];
+}
+
+- (void)downloadSelected:(id)sender{
+	ssh::RemoteFileEntry const* entry = [self targetEntry];
+	if( entry == nullptr || !_session )
+		return;
+
+	if( _active_request != 0 ){
+		NSAlert* alert        = [NSAlert new];
+		alert.messageText     = @"A download is already running";
+		alert.informativeText = @"Transfers share the tab's single SFTP connection, so they run one at a time.";
+		[alert runModal];
+		return;
+	}
+
+	std::string const remote = entry->path;
+	bool const        is_directory = entry->is_directory;
+
+	// A directory is copied recursively, so the panel asks for the folder to
+	// copy it into rather than for a file name.
+	if( is_directory ){
+		NSOpenPanel* panel         = [NSOpenPanel openPanel];
+		panel.canChooseFiles       = NO;
+		panel.canChooseDirectories = YES;
+		panel.canCreateDirectories = YES;
+		panel.prompt               = @"Download Here";
+		panel.message = [NSString stringWithFormat:@"Choose where to put “%s”", entry->name.c_str()];
+
+		if( [panel runModal] != NSModalResponseOK || panel.URL == nil )
+			return;
+
+		std::string const local =
+			std::string( panel.URL.path.UTF8String ) + "/" + entry->name;
+		[self startDownloadFrom:remote to:local];
+		return;
+	}
+
+	NSSavePanel* panel        = [NSSavePanel savePanel];
+	panel.nameFieldStringValue = @( entry->name.c_str() );
+	panel.canCreateDirectories = YES;
+	panel.prompt               = @"Download";
+
+	if( [panel runModal] != NSModalResponseOK || panel.URL == nil )
+		return;
+
+	[self startDownloadFrom:remote to:std::string( panel.URL.path.UTF8String )];
+}
+
+- (void)startDownloadFrom:(std::string const&)remote to:(std::string const&)local{
+	_active_request = next_request_id();
+	_status.stringValue = @"Starting…";
+	_session->download( _active_request, remote, local );
+}
+
+- (void)cancelTransfer:(id)sender{
+	if( _active_request == 0 || !_session )
+		return;
+
+	// request_cancel is the one SftpSession method safe to call while a transfer
+	// is in flight; the running copy notices at the next chunk boundary.
+	_session->request_cancel( _active_request );
+	_status.stringValue = @"Cancelling…";
+}
+
+- (void)copyPath:(id)sender{
+	ssh::RemoteFileEntry const* entry = [self targetEntry];
+	if( entry == nullptr )
+		return;
+
+	NSPasteboard* pasteboard = NSPasteboard.generalPasteboard;
+	[pasteboard clearContents];
+	[pasteboard setString:@( entry->path.c_str() ) forType:NSPasteboardTypeString];
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem*)item{
+	if( item.action == @selector( downloadSelected: ) || item.action == @selector( copyPath: ) )
+		return [self targetEntry] != nullptr;
+	return YES;
 }
 
 // -- NSTableViewDataSource --------------------------------------------------
