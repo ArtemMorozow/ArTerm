@@ -1,10 +1,11 @@
 #import "app/main_window_controller.h"
 
+#include <optional>
 #include <utility>
 
 #import "app/host_list_controller.h"
 #import "app/terminal_view.h"
-#import "app/session_view_controller.h"
+#import "app/session_tabs_controller.h"
 
 namespace
 {
@@ -12,30 +13,12 @@ namespace
 	constexpr CGFloat INITIAL_WIDTH  = 1100;
 	constexpr CGFloat INITIAL_HEIGHT = 720;
 
-	NSViewController* make_placeholder_controller(){
-		NSTextField* label   = [NSTextField labelWithString:@"Select a host to connect"];
-		label.textColor      = NSColor.secondaryLabelColor;
-		label.font           = [NSFont systemFontOfSize:15];
-		label.alignment      = NSTextAlignmentCenter;
-
-		NSView* container = [NSView new];
-		[container addSubview:label];
-		label.translatesAutoresizingMaskIntoConstraints = NO;
-		[NSLayoutConstraint activateConstraints:@[
-			[label.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
-			[label.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
-		]];
-
-		NSViewController* controller = [NSViewController new];
-		controller.view              = container;
-		return controller;
-	}
-
 } // namespace
 
 @implementation ArTermMainWindowController{
-	ArTermHostListController* _hosts;
-	NSSplitViewController*    _split;
+	ArTermHostListController*     _hosts;
+	ArTermSessionTabsController*  _sessions;
+	NSSplitViewController*        _split;
 }
 
 - (instancetype)init{
@@ -54,9 +37,19 @@ namespace
 	if( ( self = [super initWithWindow:window] ) ){
 		_hosts = [ArTermHostListController new];
 
+		_sessions = [ArTermSessionTabsController new];
+
 		__weak ArTermMainWindowController* weak_self = self;
 		[_hosts setConnectHandler:[weak_self]( arterm::ssh::HostProfile profile ){
 			[weak_self openSessionWithProfile:std::move( profile )];
+		}];
+
+		// + asks the sidebar which host is selected, so a new tab lands on the
+		// host the user is looking at rather than the one last connected.
+		__weak ArTermHostListController* weak_hosts = _hosts;
+		[_sessions setProfileProvider:[weak_hosts]() -> std::optional<arterm::ssh::HostProfile>{
+			ArTermHostListController* hosts = weak_hosts;
+			return hosts != nil ? [hosts selectedProfile] : std::nullopt;
 		}];
 
 		NSSplitViewController* split = [NSSplitViewController new];
@@ -66,7 +59,7 @@ namespace
 		sidebar.maximumThickness        = 360;
 		sidebar.canCollapse             = YES;
 
-		NSSplitViewItem* content = [NSSplitViewItem splitViewItemWithViewController:make_placeholder_controller()];
+		NSSplitViewItem* content = [NSSplitViewItem splitViewItemWithViewController:_sessions];
 		content.minimumThickness = 400;
 
 		[split addSplitViewItem:sidebar];
@@ -89,20 +82,16 @@ namespace
 }
 
 - (void)openSessionWithProfile:(arterm::ssh::HostProfile)profile{
-	NSString* const title = @( profile.display_name().c_str() );
+	[_sessions openTerminalForProfile:std::move( profile )];
+}
 
-	// One session at a time for now; replacing the item deallocates the previous
-	// controller, which shuts its session down.
-	ArTermSessionViewController* session =
-		[[ArTermSessionViewController alloc] initWithProfile:std::move( profile )];
+- (void)closeTab:(id)sender{
+	[_sessions closeCurrentTab];
+}
 
-	NSSplitViewItem* content = [NSSplitViewItem splitViewItemWithViewController:session];
-	content.minimumThickness = 400;
-
-	[_split removeSplitViewItem:_split.splitViewItems.lastObject];
-	[_split addSplitViewItem:content];
-
-	self.window.title = title;
+- (void)newFileBrowser:(id)sender{
+	if( auto profile = [_hosts selectedProfile] )
+		[_sessions openFilesForProfile:std::move( *profile )];
 }
 
 @end

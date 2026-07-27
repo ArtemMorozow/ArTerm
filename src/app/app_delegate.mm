@@ -37,7 +37,10 @@ namespace
 		[file.submenu addItem:action_item( @"New Host…", @selector( newHost: ), @"n" )];
 		[file.submenu addItem:action_item( @"Import Hosts from ~/.ssh/config", @selector( importHosts: ), @"" )];
 		[file.submenu addItem:NSMenuItem.separatorItem];
-		[file.submenu addItem:action_item( @"Close", @selector( performClose: ), @"w" )];
+		[file.submenu addItem:action_item( @"New File Browser Tab", @selector( newFileBrowser: ), @"b" )];
+		[file.submenu addItem:action_item( @"Close Tab", @selector( closeTab: ), @"w" )];
+		[file.submenu addItem:NSMenuItem.separatorItem];
+		[file.submenu addItem:action_item( @"Close Window", @selector( performClose: ), @"W" )];
 		[bar addItem:file];
 
 		NSMenuItem* edit = item_with_submenu( @"Edit" );

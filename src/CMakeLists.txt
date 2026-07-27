@@ -93,7 +93,11 @@ add_executable(arterm MACOSX_BUNDLE
     app/render_probe.h
     app/render_probe.mm
     app/session_view_controller.h
-    app/session_view_controller.mm)
+    app/session_view_controller.mm
+    app/session_tabs_controller.h
+    app/session_tabs_controller.mm
+    app/files_view_controller.h
+    app/files_view_controller.mm)
 
 target_link_libraries(arterm PRIVATE
     arterm_core

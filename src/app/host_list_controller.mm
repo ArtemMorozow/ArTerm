@@ -121,6 +121,18 @@
 	return ( (ArTermHostItem*)[_outline itemAtRow:row] ).profileId;
 }
 
+- (std::optional<arterm::ssh::HostProfile>)selectedProfile{
+	NSInteger const row = _outline.selectedRow;
+	if( row < 0 )
+		return std::nullopt;
+
+	NSString* profile_id = ( (ArTermHostItem*)[_outline itemAtRow:row] ).profileId;
+	if( profile_id == nil )
+		return std::nullopt;
+
+	return _store.with_secrets( profile_id.UTF8String );
+}
+
 - (void)connectToSelectedHost:(id)sender{
 	NSString* profile_id = [self clickedProfileId];
 	if( profile_id == nil || !_on_connect )
