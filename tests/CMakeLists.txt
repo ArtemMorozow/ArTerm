@@ -18,6 +18,7 @@ add_executable(arterm_tests
     tst_boxdrawing.cpp
     tst_charwidth.cpp
     tst_dispatch.cpp
+    tst_endpoint.cpp
     tst_hoststore.cpp
     tst_json.cpp
     tst_colorscheme.cpp

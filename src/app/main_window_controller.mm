@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <utility>
+#include <vector>
 
 #import "app/host_list_controller.h"
 #import "app/terminal_view.h"
@@ -44,12 +45,12 @@ namespace
 			[weak_self openSessionWithProfile:std::move( profile )];
 		}];
 
-		// + asks the sidebar which host is selected, so a new tab lands on the
-		// host the user is looking at rather than the one last connected.
+		// A new tab lists the saved hosts; the sidebar owns the store, so it is
+		// asked each time rather than handed a snapshot that could go stale.
 		__weak ArTermHostListController* weak_hosts = _hosts;
-		[_sessions setProfileProvider:[weak_hosts]() -> std::optional<arterm::ssh::HostProfile>{
+		[_sessions setHostsProvider:[weak_hosts]() -> std::vector<arterm::ssh::HostProfile>{
 			ArTermHostListController* hosts = weak_hosts;
-			return hosts != nil ? [hosts selectedProfile] : std::nullopt;
+			return hosts != nil ? [hosts allProfiles] : std::vector<arterm::ssh::HostProfile>{};
 		}];
 
 		NSSplitViewController* split = [NSSplitViewController new];
@@ -92,6 +93,10 @@ namespace
 - (void)newFileBrowser:(id)sender{
 	if( auto profile = [_hosts selectedProfile] )
 		[_sessions openFilesForProfile:std::move( *profile )];
+}
+
+- (void)newTab:(id)sender{
+	[_sessions newTab];
 }
 
 @end

@@ -5,7 +5,7 @@
 #include "ssh/ssh_types.hpp"
 
 #include <functional>
-#include <optional>
+#include <vector>
 
 /// The tabbed session area: a tab bar with a + button beside it.
 ///
@@ -19,9 +19,12 @@
 /// Opens a file browser tab and makes it current.
 - (void)openFilesForProfile:(arterm::ssh::HostProfile)profile;
 
-/// Asked for the host to open when + is used; nothing means no host is
-/// selected and the button does nothing.
-- (void)setProfileProvider:(std::function<std::optional<arterm::ssh::HostProfile>()>)provider;
+/// Supplies the saved hosts a new tab lists. Called each time one opens, so
+/// the page reflects the store without further wiring.
+- (void)setHostsProvider:(std::function<std::vector<arterm::ssh::HostProfile>()>)provider;
+
+/// Opens a new-tab start page.
+- (void)newTab;
 
 /// Closes the tab in front, shutting its session down.
 - (void)closeCurrentTab;

@@ -43,6 +43,8 @@ add_library(arterm_core STATIC
     terminal/terminal.hpp
     terminal/terminal.cpp
 
+    ssh/endpoint.hpp
+    ssh/endpoint.cpp
     ssh/ssh_types.hpp
     ssh/ssh_types.cpp
     ssh/ssh_library.hpp
@@ -96,6 +98,10 @@ add_executable(arterm MACOSX_BUNDLE
     app/session_view_controller.mm
     app/session_tabs_controller.h
     app/session_tabs_controller.mm
+    app/tab_bar_view.h
+    app/tab_bar_view.mm
+    app/new_tab_controller.h
+    app/new_tab_controller.mm
     app/files_view_controller.h
     app/files_view_controller.mm)
 

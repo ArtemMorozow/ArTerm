@@ -1,5 +1,6 @@
 #import "app/render_probe.h"
 
+#import "app/main_window_controller.h"
 #import "app/terminal_view.h"
 
 #include <string>
@@ -128,6 +129,28 @@ namespace
 
 } // namespace
 
+/// The whole window, so the tab bar and the start page can be checked the same
+/// way the terminal grid is - by looking at the result.
+bool write_window_probe( NSString* directory ){
+	ArTermMainWindowController* controller = [ArTermMainWindowController new];
+	NSWindow*                   window     = controller.window;
+	[window setFrame:NSMakeRect( 0, 0, 1100, 700 ) display:YES];
+
+	// Give the view tree a pass of layout before it is captured.
+	[window.contentView layoutSubtreeIfNeeded];
+	[window displayIfNeeded];
+
+	NSView*           view   = window.contentView;
+	NSBitmapImageRep* bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+	if( bitmap == nil )
+		return false;
+
+	[view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+
+	NSData* png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+	return png != nil && [png writeToFile:[directory stringByAppendingPathComponent:@"window.png"] atomically:YES];
+}
+
 bool arterm_write_render_probe( NSString* directory ){
 	NSError* error = nil;
 	[NSFileManager.defaultManager createDirectoryAtPath:directory
@@ -135,7 +158,7 @@ bool arterm_write_render_probe( NSString* directory ){
 											 attributes:nil
 												  error:&error];
 
-	bool ok = true;
+	bool ok = write_window_probe( directory );
 	for( Case const& probe : cases() ){
 		if( !write_case( probe, directory ) ){
 			NSLog( @"render probe: could not write case %s", probe.name );

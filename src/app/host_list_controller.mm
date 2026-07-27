@@ -121,6 +121,10 @@
 	return ( (ArTermHostItem*)[_outline itemAtRow:row] ).profileId;
 }
 
+- (std::vector<arterm::ssh::HostProfile>)allProfiles{
+	return _store.profiles();
+}
+
 - (std::optional<arterm::ssh::HostProfile>)selectedProfile{
 	NSInteger const row = _outline.selectedRow;
 	if( row < 0 )
