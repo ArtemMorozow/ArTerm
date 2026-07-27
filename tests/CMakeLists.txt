@@ -23,6 +23,7 @@ add_executable(arterm_tests
     tst_colorscheme.cpp
     tst_keyencoder.cpp
     tst_screen.cpp
+    tst_selection.cpp
     tst_signal.cpp
     tst_terminal.cpp
     tst_vtparser.cpp)

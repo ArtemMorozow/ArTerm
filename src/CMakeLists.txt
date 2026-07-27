@@ -34,6 +34,8 @@ add_library(arterm_core STATIC
     terminal/key_event.hpp
     terminal/key_encoder.hpp
     terminal/key_encoder.cpp
+    terminal/selection.hpp
+    terminal/selection.cpp
     terminal/screen.hpp
     terminal/screen.cpp
     terminal/vt_parser.hpp

@@ -56,6 +56,16 @@ namespace arterm::term
 		return &_scrollback[static_cast<std::size_t>( index )];
 	}
 
+	bool Screen::is_history_line_wrapped( int offset ) const{
+		if( offset >= 0 )
+			return is_line_wrapped( offset );
+
+		int const index = static_cast<int>( _scrollback_wrapped.size() ) + offset;
+		if( index < 0 || index >= static_cast<int>( _scrollback_wrapped.size() ) )
+			return false;
+		return _scrollback_wrapped[static_cast<std::size_t>( index )];
+	}
+
 	bool Screen::is_line_wrapped( int row ) const{
 		if( row < 0 || row >= static_cast<int>( _wrapped.size() ) )
 			return false;
@@ -70,8 +80,10 @@ namespace arterm::term
 
 	void Screen::set_scrollback_limit( int lines ){
 		_scrollback_limit = std::max( 0, lines );
-		while( static_cast<int>( _scrollback.size() ) > _scrollback_limit )
+		while( static_cast<int>( _scrollback.size() ) > _scrollback_limit ){
 			_scrollback.pop_front();
+			_scrollback_wrapped.pop_front();
+		}
 		++_revision;
 	}
 
@@ -104,8 +116,11 @@ namespace arterm::term
 			for( int i = 0; i < to_scroll; ++i ){
 				if( _scrollback_limit > 0 ){
 					_scrollback.push_back( std::move( _lines.front() ) );
-					while( static_cast<int>( _scrollback.size() ) > _scrollback_limit )
+					_scrollback_wrapped.push_back( is_line_wrapped( 0 ) );
+					while( static_cast<int>( _scrollback.size() ) > _scrollback_limit ){
 						_scrollback.pop_front();
+						_scrollback_wrapped.pop_front();
+					}
 				}
 				_lines.erase( _lines.begin() );
 				_wrapped.erase( _wrapped.begin() );
@@ -123,7 +138,8 @@ namespace arterm::term
 			while( deficit > 0 && !_scrollback.empty() ){
 				_lines.insert( _lines.begin(), std::move( _scrollback.back() ) );
 				_scrollback.pop_back();
-				_wrapped.insert( _wrapped.begin(), false );
+				_wrapped.insert( _wrapped.begin(), _scrollback_wrapped.back() );
+				_scrollback_wrapped.pop_back();
 				_cursor.row++;
 				--deficit;
 			}
@@ -356,6 +372,7 @@ namespace arterm::term
 
 	void Screen::clear_scrollback(){
 		_scrollback.clear();
+		_scrollback_wrapped.clear();
 		++_revision;
 	}
 
@@ -435,8 +452,11 @@ namespace arterm::term
 		for( int i = 0; i < count; ++i ){
 			if( feeds_scrollback && _scrollback_limit > 0 ){
 				_scrollback.push_back( std::move( _lines[static_cast<std::size_t>( _scroll_top )] ) );
-				while( static_cast<int>( _scrollback.size() ) > _scrollback_limit )
+				_scrollback_wrapped.push_back( is_line_wrapped( _scroll_top ) );
+				while( static_cast<int>( _scrollback.size() ) > _scrollback_limit ){
 					_scrollback.pop_front();
+					_scrollback_wrapped.pop_front();
+				}
 			}
 
 			_lines.erase( _lines.begin() + _scroll_top );

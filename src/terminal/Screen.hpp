@@ -125,6 +125,11 @@ namespace arterm::term
 		[[nodiscard]] bool is_line_wrapped( int row ) const;
 		void               set_line_wrapped( int row, bool wrapped );
 
+		/// Same question in the coordinate space `history_line` uses, so a
+		/// selection reaching into the scrollback can still tell a wrapped row
+		/// from one that ended in a newline.
+		[[nodiscard]] bool is_history_line_wrapped( int offset ) const;
+
 		/// Marks every line as needing a repaint; used after a full reset.
 		void                        mark_all_dirty() { _revision++; }
 		[[nodiscard]] std::uint64_t revision() const noexcept { return _revision; }
@@ -138,7 +143,11 @@ namespace arterm::term
 		int _scrollback_limit;
 
 		std::vector<Line> _lines;
-		std::deque<Line>  _scrollback;
+		std::deque<Line> _scrollback;
+		/// Parallel to `_scrollback`: a line keeps its wrap flag when it scrolls
+		/// off, which is what lets a wrapped command be copied back out of the
+		/// history as the single line it was typed as.
+		std::deque<bool>  _scrollback_wrapped;
 		std::vector<bool> _wrapped;
 		std::vector<bool> _tab_stops;
 
